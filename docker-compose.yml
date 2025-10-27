@@ -1,0 +1,13 @@
+services:
+  n3fjp-map:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: n3fjp-map
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/config:ro
+      - ./app/static:/app/static
+    environment:
+      - CONFIG_FILE=/config/config.yml
