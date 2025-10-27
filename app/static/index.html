@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>K2FTS Live Contacts</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    body { margin:0; font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#0b0e12; color:#e6e6e6; }
+    .topbar { display:flex; gap:12px; align-items:center; padding:10px 14px; background:#121722; border-bottom:1px solid #1d2330; }
+    .pill { padding:3px 8px; border-radius:999px; font-size:12px; }
+    .pill.ok { background:#10381a; color:#6be07e;}
+    .pill.bad{ background:#3a1414; color:#ff7a7a;}
+    .grid { display:grid; grid-template-columns: 320px 1fr; gap:0; height: calc(100vh - 52px); }
+    .sidebar { background:#0f141d; border-right:1px solid #1d2330; padding:12px; overflow:auto; }
+    .sidebar h3 { margin:10px 0 6px; font-weight:600; font-size:13px; color:#a7b1c2; }
+    .sidebar .box { background:#0b0f17; border:1px solid #1a2130; border-radius:10px; padding:10px; margin-bottom:12px; }
+    .select { width:100%; background:#0b0f17; color:#e6e6e6; border:1px solid #1a2130; border-radius:8px; padding:6px 8px; }
+    .main { position:relative; background:#0b0e12; }
+    #map, #globeCanvas { position:absolute; inset:0; }
+    #globeCanvas { display:none; } /* start on map */
+    .banner { position:absolute; left:0; right:0; bottom:0; padding:6px 12px; background:linear-gradient(180deg, rgba(0,0,0,0) 0%, #0b0e12 35%); pointer-events:none; }
+    .ticker { font-size:13px; color:#9fb3c8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .togglewrap { display:flex; gap:8px; }
+    .togglewrap button { background:#0b0f17; color:#cfe0ff; border:1px solid #1a2130; padding:6px 10px; border-radius:8px; cursor:pointer; }
+    .togglewrap button.active { background:#19314d; border-color:#24486d; }
+    #recentBox { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; line-height:1.35; color:#9fb3c8; }
+  </style>
+
+  <!-- Leaflet -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- Globe.gl (three + three-globe bundled) -->
+  <script src="https://unpkg.com/globe.gl"></script>
+</head>
+<body>
+  <div class="topbar">
+    <div class="togglewrap">
+      <button id="btnMap" class="active">Map</button>
+      <button id="btnGlobe">Globe</button>
+    </div>
+    <span class="pill" id="connPill">Connecting…</span>
+    <span>Program: <strong id="prog">—</strong></span>
+    <span>API: <strong id="api">—</strong></span>
+    <span>Origin: <strong id="originTxt">—</strong></span>
+    <span>Last Event: <strong id="lastEvt">—</strong></span>
+    <span>Sections Worked: <strong id="workedCount">0</strong></span>
+  </div>
+
+  <div class="grid">
+    <div class="sidebar">
+      <div class="box">
+        <h3>Filters</h3>
+        <label>Band</label>
+        <select id="bandSel" class="select">
+          <option value="">All</option>
+          <option>160</option><option>80</option><option>60</option><option>40</option>
+          <option>30</option><option>20</option><option>17</option><option>15</option>
+          <option>12</option><option>10</option><option>6</option><option>2</option>
+        </select>
+        <div style="height:8px"></div>
+        <label>Mode</label>
+        <select id="modeSel" class="select">
+          <option value="">All</option>
+          <option>PH</option>
+          <option>DIG</option>
+          <option>CW</option>
+        </select>
+        <div style="height:8px"></div>
+        <label>Operator</label>
+        <select id="operSel" class="select"><option value="">All</option></select>
+      </div>
+
+      <div class="box">
+        <h3>Recent frames</h3>
+        <div id="recentBox"></div>
+      </div>
+    </div>
+
+    <div class="main">
+      <div id="map"></div>
+      <div id="globeCanvas"></div>
+      <div class="banner">
+        <div id="bannerText" class="ticker">Waiting for first contact…</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
