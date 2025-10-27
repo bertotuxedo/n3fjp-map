@@ -1,0 +1,19 @@
+# N3FJP TCP server location
+N3FJP_HOST: "192.168.1.126"
+N3FJP_PORT: 1100
+
+# Behavior
+WFD_MODE: true                 # prefer section centroids when available
+PREFER_SECTION_ALWAYS: false   # force all to section centroids if true
+TTL_SECONDS: 60                # how long a path persists (s)
+HEARTBEAT_SECONDS: 5           # how often to ping APIVER for liveness
+
+# Optional server-side filters (comma-separated)
+# Example: "20,40,80"
+BAND_FILTER: ""
+# Example: "PH,CW"
+MODE_FILTER: ""
+
+# Notes:
+# - These values override environment variables if both are set.
+# - Change, then restart the container to apply.
