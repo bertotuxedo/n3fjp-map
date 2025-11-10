@@ -1,0 +1,17 @@
+{
+  "Atlantic": "/static/data/out_divisions/arrl_division_Atlantic.geojson",
+  "Central": "/static/data/out_divisions/arrl_division_Central.geojson",
+  "Dakota": "/static/data/out_divisions/arrl_division_Dakota.geojson",
+  "Delta": "/static/data/out_divisions/arrl_division_Delta.geojson",
+  "Great Lakes": "/static/data/out_divisions/arrl_division_Great_Lakes.geojson",
+  "Hudson": "/static/data/out_divisions/arrl_division_Hudson.geojson",
+  "Midwest": "/static/data/out_divisions/arrl_division_Midwest.geojson",
+  "New England": "/static/data/out_divisions/arrl_division_New_England.geojson",
+  "Northwestern": "/static/data/out_divisions/arrl_division_Northwestern.geojson",
+  "Pacific": "/static/data/out_divisions/arrl_division_Pacific.geojson",
+  "Roanoke": "/static/data/out_divisions/arrl_division_Roanoke.geojson",
+  "Rocky Mountain": "/static/data/out_divisions/arrl_division_Rocky_Mountain.geojson",
+  "Southeastern": "/static/data/out_divisions/arrl_division_Southeastern.geojson",
+  "Southwestern": "/static/data/out_divisions/arrl_division_Southwestern.geojson",
+  "West Gulf": "/static/data/out_divisions/arrl_division_West_Gulf.geojson"
+}
