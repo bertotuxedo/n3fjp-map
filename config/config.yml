@@ -1,5 +1,5 @@
 # N3FJP TCP server location
-N3FJP_HOST: "192.168.1.126"
+N3FJP_HOST: "192.168.1.123"
 N3FJP_PORT: 1100
 
 # Behavior
