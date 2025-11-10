@@ -1,246 +1,299 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-Merge Canadian Census Subdivision (CSD) polygons into sections/provinces for WFD mapping.
-
-Input  : /root/n3fjp-map/app/static/data/origin_geojson/georef-canada-census-subdivision.geojson
-Output : /root/n3fjp-map/app/static/data/canada_sections_merged.geojson
-
-Sections produced:
-- AB, BC, MB, NB, NL, NS, PE, QC, SK
-- TER (NT+YT+NU combined)
-- Ontario split: GH, ONE, ONS, ONN
-
-Notes:
-- You listed "Quebec (QB)"; the canonical two-letter is "QC". This script outputs QC.
-- Name matching is case-insensitive and strips prefixes like "City of", "Regional Municipality of", etc.
-"""
-
-import json
-import re
+import argparse
 import sys
-from pathlib import Path
-
+import unicodedata
+import re
 import geopandas as gpd
-from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry import GeometryCollection
 
-# --------- CONFIG ---------
-INPUT = Path("/root/n3fjp-map/app/static/data/origin_geojson/georef-canada-census-subdivision.geojson")
-OUTPUT = Path("/root/n3fjp-map/app/static/data/canada_sections_merged.geojson")
+# ---------------------------
+# Normalization helpers
+# ---------------------------
+def strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
 
-# If your file has different columns, these helpers try to auto-detect.
-PROV_CODE_CANDIDATES = [
-    "prov_code", "PR_ABBR", "PRCODE", "PR_UID", "PRUID", "PROV_CODE", "PR", "PRCODE_ABBR"
-]
-PROV_NAME_CANDIDATES = ["PRNAME", "PRENAME", "province", "PROV_NAME", "PROV"]
-CSD_NAME_CANDIDATES  = ["CSDNAME", "ENNAME", "name", "CSD_NAME", "CENSUS_SUBDIVISION_NAME"]
-
-# Map PRUID (StatsCan numeric) to 2-letter abbreviations (fallback if no abbr present)
-PRUID_TO_ABBR = {
-    "10": "NL", "11": "PE", "12": "NS", "13": "NB", "24": "QC", "35": "ON",
-    "46": "MB", "47": "SK", "48": "AB", "59": "BC", "60": "YT", "61": "NT", "62": "NU"
-}
-
-# Ontario splits — name lists as provided (normalized automatically)
-GH_NAMES = [
-    "Durham Regional Municipality", "Halton Regional Municipality", "Hamilton",
-    "Niagara Regional Municipality", "Peel Region Municipality", "Toronto",
-    "York Regional Municipality"
-]
-
-ONE_NAMES = [
-    "Frontenac County", "Hastings County", "Haliburton County", "City of Kawartha Lakes",
-    "Lanark County", "Leeds & Grenville United Counties", "Lennox-Addington County",
-    "Northumberland County", "City of Ottawa", "City of Prince Edward",
-    "Peterborough County", "United Counties of Prescott & Russell", "Renfrew County",
-    "United Counties of Stormont Dundas & Glengarry",
-    "Nipissing District - South Part, Unorganized, South Algonquin",
-]
-
-ONN_NAMES = [
-    "Algoma District", "Cochrane District", "Kenora District", "Manitoulin Island",
-    "Nipissing District - All except South Part, Unorganized, South Algonquin",
-    "Rainy River District", "City of Sudbury", "Grand Sudbury", "Thunder Bay District",
-    "Timiskaming District",
-]
-
-ONS_NAMES = [
-    "City of Brantford", "City of Brant", "Bruce County", "City of Chatham-Kent",
-    "Dufferin County", "Elgin County", "Essex County", "Grey County",
-    "Town of Haldimand", "Huron County", "Lambton County", "Middlesex County",
-    "Muskoka District", "Town of Norfolk", "Oxford County", "Perth County",
-    "Parry Sound District", "Simcoe County", "Waterloo Regional Municipality",
-    "Wellington County",
-]
-
-# Territories that will be merged into TER
-TERR_ABBRS = {"YT", "NT", "NU"}
-
-# Provinces (kept as-is)
-PROV_SETS = {"AB", "BC", "MB", "NB", "NL", "NS", "PE", "QC", "SK"}
-
-# ---------- Helpers ----------
-def normalize(s: str) -> str:
-    """Normalize names for matching: lowercase, trim, collapse spaces, drop common prefixes."""
+def norm_name(s: str) -> str:
     if s is None:
         return ""
-    t = s.strip().lower()
+    x = strip_accents(str(s)).lower()
+    # remove punctuation
+    x = re.sub(r"[^\w\s&/]", " ", x)
+    # collapse whitespace
+    x = re.sub(r"\s+", " ", x).strip()
 
-    # Drop “of” prefixes (City of, Town of, Regional Municipality of, United Counties of, County of, Municipality of)
-    t = re.sub(r"^(city|town|regional municipality|united counties|county|municipality|township)\s+of\s+", "", t)
-    t = t.replace("&", "and")
-    # collapse whitespace and punctuation variants
-    t = re.sub(r"[\s\-–—]+", " ", t)
-    t = t.replace(",", "").strip()
-    return t
+    # remove common words in ENG/FRA for fair matching
+    stop = [
+        "county","comte","regional municipality","municipalite regionale",
+        "united counties","comtes unis","district","city of","ville de",
+        "town of","cité de","municipality","municipalite","rm","rm of",
+        "region","regions","united county","county of","comte de",
+        "united","comtes","ville","city"
+    ]
+    for w in stop:
+        x = re.sub(rf"\b{w}\b", " ", x)
+    x = re.sub(r"\s+", " ", x).strip()
+    return x
 
-def normalize_set(names):
-    return {normalize(x) for x in names}
+# Canonical set builder
+def canon_set(names):
+    return set(norm_name(n) for n in names)
 
-GH_N = normalize_set(GH_NAMES)
-ONE_N = normalize_set(ONE_NAMES)
-ONN_N = normalize_set(ONN_NAMES)
-ONS_N = normalize_set(ONS_NAMES)
+# ---------------------------
+# Ontario group definitions
+# ---------------------------
 
-def pick_first_present(cols, candidates):
-    for c in candidates:
-        if c in cols:
-            return c
+# GH = Greater Horseshoe (CSD-level members)
+GH_CSD = canon_set([
+    "Durham Regional Municipality",
+    "Halton Regional Municipality",
+    "City of Hamilton",
+    "Niagara Regional Municipality",
+    "Peel Regional Municipality",
+    "City of Toronto",
+    "York Regional Municipality",
+    # French-ish forms likely present for Ontario as well:
+    "Municipalité régionale de Durham",
+    "Municipalité régionale de Halton",
+    "Hamilton",
+    "Municipalité régionale de Niagara",
+    "Municipalité régionale de Peel",
+    "Toronto",
+    "Municipalité régionale de York",
+])
+
+# ONE (mostly CD-level — Counties, United Counties, City of Ottawa etc.)
+ONE_CD = canon_set([
+    "Frontenac County",
+    "Hastings County",
+    "Haliburton County",
+    "City of Kawartha Lakes",  # single-tier
+    "Lanark County",
+    "United Counties of Leeds and Grenville",
+    "Lennox and Addington County",
+    "Northumberland County",
+    "City of Ottawa",          # single-tier
+    "Prince Edward County",
+    "Peterborough County",
+    "United Counties of Prescott and Russell",
+    "Renfrew County",
+    "United Counties of Stormont, Dundas and Glengarry",
+    # French variants that might appear:
+    "Comte de Frontenac","Comte de Hastings","Comte de Haliburton",
+    "Ville de Kawartha Lakes","Comte de Lanark",
+    "Comtes unis de Leeds et Grenville",
+    "Comte de Lennox et Addington",
+    "Comte de Northumberland","Ville d Ottawa",
+    "Comte de Prince Edward","Comte de Peterborough",
+    "Comtes unis de Prescott et Russell",
+    "Comte de Renfrew",
+    "Comtes unis de Stormont Dundas et Glengarry",
+])
+
+# ONN (CD-level — northern districts and City of Greater Sudbury single-tier)
+ONN_CD = canon_set([
+    "Algoma District",
+    "Cochrane District",
+    "Kenora District",
+    "Manitoulin District",
+    "Nipissing District",  # note: “South Part, Unorganized, South Algonquin” excluded (see special below)
+    "Rainy River District",
+    "City of Greater Sudbury",
+    "Thunder Bay District",
+    "Timiskaming District",
+    # French variants:
+    "District d algoma","District de cochrane","District de kenora",
+    "District de manitoulin","District de nipissing",
+    "District de rainy river","Ville du Grand Sudbury",
+    "District de thunder bay","District de timiskaming",
+])
+
+# ONS (CD-level — southwest/central)
+ONS_CD = canon_set([
+    "City of Brantford",
+    "Brant County",
+    "Bruce County",
+    "Chatham-Kent",
+    "Dufferin County",
+    "Elgin County",
+    "Essex County",
+    "Grey County",
+    "Haldimand County",
+    "Huron County",
+    "Lambton County",
+    "Middlesex County",
+    "District Municipality of Muskoka",
+    "Norfolk County",
+    "Oxford County",
+    "Perth County",
+    "Parry Sound District",
+    "Simcoe County",
+    "Regional Municipality of Waterloo",
+    "Wellington County",
+    # French-ish:
+    "Ville de brantford","Comte de brant","Comte de bruce",
+    "Chatham kent","Comte de dufferin","Comte d elgin",
+    "Comte d essex","Comte de grey","Comte d haldimand",
+    "Comte de huron","Comte de lambton","Comte de middlesex",
+    "Municipalite de district de muskoka","Comte de norfolk",
+    "Comte d oxford","Comte de perth","District de parry sound",
+    "Comte de simcoe","Municipalite regionale de waterloo",
+    "Comte de wellington",
+])
+
+# Special Ontario clause:
+# “Nipissing District - South Part, Unorganized, South Algonquin” must be in ONE (not ONN).
+# We'll detect this by *CSD* name match (csd_name_fr) containing "South Algonquin".
+SPECIAL_ONE_CSD_FRAGMENT = canon_set(["South Algonquin", "Algonquin Sud"])
+
+# ---------------------------
+# Province/territory to SECTION mapping (outside Ontario)
+# ---------------------------
+# Use French province names as seen in your file (prov_name_fr).
+PROV_TO_SECTION = {
+    # Provinces
+    "alberta": "AB",
+    "colombie britanique": "BC",    # sometimes “Colombie-Britannique”
+    "colombie britanique": "BC",
+    "colombie-britannique": "BC",
+    "manitoba": "MB",
+    "nouveau brunswick": "NB",
+    "terre neuve et labrador": "NL",
+    "nouvelle ecosse": "NS",
+    "nouvelle-ecosse": "NS",
+    "ile du prince edouard": "PE",
+    "ile-du-prince-edouard": "PE",
+    "quebec": "QC",
+    "saskatchewan": "SK",
+
+    # Territories (mapped later to TER with union)
+    "territoires du nord ouest": "TER",
+    "territoires du nord-ouest": "TER",
+    "yukon": "TER",
+    "nunavut": "TER",
+}
+
+# English fallbacks (if your file sometimes carries English)
+PROV_TO_SECTION_EN = {
+    "alberta": "AB",
+    "british columbia": "BC",
+    "manitoba": "MB",
+    "new brunswick": "NB",
+    "newfoundland and labrador": "NL",
+    "nova scotia": "NS",
+    "prince edward island": "PE",
+    "quebec": "QC",
+    "saskatchewan": "SK",
+    "northwest territories": "TER",
+    "yukon": "TER",
+    "nunavut": "TER",
+}
+
+def pick_section_non_ontario(prov_name: str) -> str | None:
+    p = norm_name(prov_name)
+    if p in PROV_TO_SECTION:
+        return PROV_TO_SECTION[p]
+    if p in PROV_TO_SECTION_EN:
+        return PROV_TO_SECTION_EN[p]
     return None
 
-def ensure_multipolygon(geom):
-    if geom is None or geom.is_empty:
-        return None
-    if isinstance(geom, (MultiPolygon,)):
-        return geom
-    if isinstance(geom, Polygon):
-        return MultiPolygon([geom])
-    # If it's a GeometryCollection or others, dissolve polygons only
-    polys = [g for g in geom.geoms if isinstance(g, (Polygon, MultiPolygon))] if hasattr(geom, "geoms") else []
-    if not polys:
-        return None
-    merged = polys[0]
-    for g in polys[1:]:
-        merged = merged.union(g)
-    return ensure_multipolygon(merged)
+# ---------------------------
+# Assignment logic for Ontario
+# ---------------------------
+def assign_ontario_section(row, cd_name_col: str, csd_name_col: str) -> str | None:
+    cd_name = norm_name(row.get(cd_name_col, ""))
+    csd_name = norm_name(row.get(csd_name_col, ""))
 
-# ---------- Load ----------
-print(f"Reading {INPUT} ...")
-gdf = gpd.read_file(INPUT)
-
-cols = list(gdf.columns)
-prov_code_col = pick_first_present(cols, PROV_CODE_CANDIDATES)
-prov_name_col = pick_first_present(cols, PROV_NAME_CANDIDATES)
-csd_name_col  = pick_first_present(cols, CSD_NAME_CANDIDATES)
-
-if not csd_name_col:
-    raise SystemExit(f"Could not detect CSD name column. Looked for {CSD_NAME_CANDIDATES}. Found: {cols}")
-
-# Build a 2-letter province abbr column
-if prov_code_col and gdf[prov_code_col].astype(str).str.len().eq(2).any():
-    gdf["PR_ABBR2"] = gdf[prov_code_col].astype(str).str.upper()
-else:
-    # Try PRUID route
-    pruid_col = None
-    for c in cols:
-        if c.upper() == "PRUID":
-            pruid_col = c
-            break
-    if pruid_col:
-        gdf["PR_ABBR2"] = gdf[pruid_col].astype(str).map(PRUID_TO_ABBR).fillna("")
-    else:
-        # Try to infer from full name
-        name_to_abbr = {
-            "newfoundland and labrador": "NL",
-            "prince edward island": "PE",
-            "nova scotia": "NS",
-            "new brunswick": "NB",
-            "quebec": "QC",
-            "ontario": "ON",
-            "manitoba": "MB",
-            "saskatchewan": "SK",
-            "alberta": "AB",
-            "british columbia": "BC",
-            "yukon": "YT",
-            "northwest territories": "NT",
-            "nunavut": "NU",
-        }
-        if not prov_name_col:
-            raise SystemExit("Could not detect province code/name columns. Please adjust PROV_CODE_CANDIDATES/PROV_NAME_CANDIDATES.")
-        gdf["PR_ABBR2"] = (
-            gdf[prov_name_col]
-            .astype(str)
-            .str.lower()
-            .map(name_to_abbr)
-            .fillna("")
-        )
-
-if gdf["PR_ABBR2"].eq("").any():
-    missing = gdf[gdf["PR_ABBR2"].eq("")][[csd_name_col]].head(5)
-    print("Warning: some rows have unknown province abbr. Example:", missing.to_dict(orient="records"))
-
-# Normalized CSD name for matching
-gdf["_CSD_NORM"] = gdf[csd_name_col].astype(str).apply(normalize)
-
-# ---------- Assign Section Codes ----------
-def assign_section(row):
-    pr = row["PR_ABBR2"]
-    if pr in TERR_ABBRS:
-        return "TER"
-    if pr in PROV_SETS:
-        return pr
-    if pr == "ON":
-        n = row["_CSD_NORM"]
-
-        if n in GH_N:
-            return "GH"
-        if n in ONE_N:
+    # Special carve-out -> ONE (South Algonquin)
+    for frag in SPECIAL_ONE_CSD_FRAGMENT:
+        if frag in csd_name:
             return "ONE"
-        if n in ONN_N:
-            return "ONN"
-        if n in ONS_N:
-            return "ONS"
-        # Not explicitly listed → fall back to ONS (southern rest) by default
-        # You can change this behavior if desired.
+
+    # GH by CSD (municipalities at CSD level)
+    if csd_name in GH_CSD:
+        return "GH"
+
+    # The rest are mostly CD-based
+    if cd_name in ONE_CD:
+        return "ONE"
+    if cd_name in ONN_CD:
+        return "ONN"
+    if cd_name in ONS_CD:
         return "ONS"
 
-    # If somehow other codes exist, skip
-    return None
+    return None  # unassigned -> will default later if needed
 
-gdf["SECTION"] = gdf.apply(assign_section, axis=1)
-keep = gdf[~gdf["SECTION"].isna()].copy()
+# ---------------------------
+# Main
+# ---------------------------
+def main():
+    ap = argparse.ArgumentParser(description="Build merged Canadian sections GeoJSON (WFD/RAC style).")
+    ap.add_argument("--input", required=True, help="Path to source CSD-level GeoJSON")
+    ap.add_argument("--output", required=True, help="Path to write merged GeoJSON")
+    args = ap.parse_args()
 
-# ---------- Dissolve (merge) ----------
-# Dissolve all geometries by SECTION
-print("Merging geometries by SECTION ...")
-merged = keep.dissolve(by="SECTION", as_index=False, aggfunc="first")
+    print(f"Reading {args.input} ...")
+    gdf = gpd.read_file(args.input)
 
-# Ensure MultiPolygon geometries and drop empties
-merged["geometry"] = merged["geometry"].apply(ensure_multipolygon)
-merged = merged[~merged["geometry"].isna()].copy()
+    # Identify columns present
+    cols = {c.lower(): c for c in gdf.columns}
+    # Province name (French/English)
+    prov_col = cols.get("prov_name_fr") or cols.get("prov_name_en") or cols.get("prname") or cols.get("province") or None
+    # CD/CSD names
+    cd_col = cols.get("cd_name_fr") or cols.get("cd_name_en") or cols.get("cdname") or None
+    csd_col = cols.get("csd_name_fr") or cols.get("csd_name_en") or cols.get("csdname") or cols.get("name") or None
 
-# Add properties expected by your frontend/backend
-# code: section code; name: readable
-SECTION_LABELS = {
-    "AB": "Alberta", "BC": "British Columbia", "MB": "Manitoba",
-    "NB": "New Brunswick", "NL": "Newfoundland & Labrador",
-    "NS": "Nova Scotia", "PE": "Prince Edward Island", "QC": "Quebec",
-    "SK": "Saskatchewan", "TER": "Territories (YT+NT+NU)",
-    "GH": "Ontario – Golden Horseshoe",
-    "ONE": "Ontario East",
-    "ONN": "Ontario North",
-    "ONS": "Ontario South",
-}
-merged["code"] = merged["SECTION"]
-merged["name"] = merged["SECTION"].map(SECTION_LABELS).fillna(merged["SECTION"])
+    if not prov_col:
+        print(f"ERROR: could not detect province name column. Found: {list(gdf.columns)}", file=sys.stderr)
+        sys.exit(1)
+    if not csd_col:
+        print(f"ERROR: could not detect CSD name column. Found: {list(gdf.columns)}", file=sys.stderr)
+        sys.exit(1)
+    if not cd_col:
+        print("WARN: no CD name column detected; Ontario matching will be CSD-only where possible.")
 
-# Order features in a friendly way
-order = ["GH","ONE","ONN","ONS","AB","BC","MB","NB","NL","NS","PE","QC","SK","TER"]
-merged["__order"] = merged["code"].apply(lambda c: order.index(c) if c in order else 999)
-merged = merged.sort_values("__order").drop(columns="__order")
+    # Prepare SECTION
+    gdf["SECTION"] = None
 
-# ---------- Save ----------
-merged = merged[["code", "name", "geometry"]]
-merged.to_file(OUTPUT, driver="GeoJSON")
-print(f"✅ Wrote {OUTPUT.resolve()}")
+    # First, provinces that are NOT Ontario
+    mask_not_on = gdf[prov_col].str.lower() != "ontario"
+    gdf.loc[mask_not_on, "SECTION"] = gdf.loc[mask_not_on, prov_col].apply(pick_section_non_ontario)
+
+    # Ontario rows
+    on_mask = gdf[prov_col].str.lower() == "ontario"
+    if on_mask.any():
+        on_rows = gdf.loc[on_mask].copy()
+        # assign with Ontario logic
+        gdf.loc[on_mask, "SECTION"] = on_rows.apply(
+            lambda r: assign_ontario_section(r, cd_col if cd_col else "", csd_col), axis=1
+        )
+
+        # Any Ontario rows still unassigned? Default them to ONS (safer than losing them)
+        still_none = on_mask & gdf["SECTION"].isna()
+        if still_none.any():
+            gdf.loc[still_none, "SECTION"] = "ONS"
+
+    # Collapse/clean: Anything still None -> drop (shouldn’t be many)
+    gdf = gdf[~gdf["SECTION"].isna()].copy()
+
+    # For TER: territories already mapped to "TER" above; nothing special needed here
+    # Dissolve by SECTION
+    print("Merging geometries by SECTION ...")
+    out = gdf.dissolve(by="SECTION", as_index=False)
+
+    # Some dissolve results may carry GeometryCollections; make valid via buffer(0)
+    out["geometry"] = out["geometry"].apply(
+        lambda geom: GeometryCollection() if geom is None else geom.buffer(0) if not geom.is_valid else geom
+    )
+
+    # Save
+    print(f"✅ Wrote {args.output}")
+    out.to_file(args.output, driver="GeoJSON")
+
+    # Quick summary
+    counts = gdf.groupby("SECTION").size().sort_values(ascending=False)
+    print("\nFeature counts by SECTION (pre-dissolve):")
+    print(counts.to_string())
+
+
+if __name__ == "__main__":
+    main()
