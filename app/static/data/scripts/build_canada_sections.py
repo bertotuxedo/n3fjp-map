@@ -4,8 +4,8 @@
 """
 Merge Canadian Census Subdivision (CSD) polygons into sections/provinces for WFD mapping.
 
-Input  : /mnt/data/georef-canada-census-subdivision.geojson
-Output : ./canada_sections_merged.geojson (one feature per section code)
+Input  : /root/n3fjp-map/app/static/data/origin_geojson/georef-canada-census-subdivision.geojson
+Output : /root/n3fjp-map/app/static/data/canada_sections_merged.geojson
 
 Sections produced:
 - AB, BC, MB, NB, NL, NS, PE, QC, SK
@@ -26,8 +26,8 @@ import geopandas as gpd
 from shapely.geometry import MultiPolygon, Polygon
 
 # --------- CONFIG ---------
-INPUT = Path("/mnt/data/georef-canada-census-subdivision.geojson")
-OUTPUT = Path("./canada_sections_merged.geojson")
+INPUT = Path("/root/n3fjp-map/app/static/data/origin_geojson/georef-canada-census-subdivision.geojson")
+OUTPUT = Path("/root/n3fjp-map/app/static/data/canada_sections_merged.geojson")
 
 # If your file has different columns, these helpers try to auto-detect.
 PROV_CODE_CANDIDATES = [
