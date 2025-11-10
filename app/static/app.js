@@ -63,6 +63,9 @@ function setOrigin(o){
 const workedSections = new Set();
 
 const sectionPolygonGroup = L.layerGroup().addTo(map);
+map.createPane('sectionHighlightPane');
+map.getPane('sectionHighlightPane').style.zIndex = 650;
+const sectionHighlightGroup = L.layerGroup().addTo(map);
 let sectionPinsLayer = L.layerGroup().addTo(map);
 let sectionCentroids = {};
 
@@ -74,6 +77,8 @@ const DIVISION_COLOR_PALETTE = [
   '#22c55e','#6366f1','#fb7185','#0ea5e9','#f59e0b'
 ];
 let divisionColorIndex = 0;
+let highlightedSectionCode = null;
+let pendingHighlightCode = null;
 
 function colorForDivision(name){
   const key = (name || '').toUpperCase();
@@ -119,7 +124,51 @@ function registerSectionPolygon(code, layer, color){
   entry.color = color;
   entry.layers.push(layer);
   if (workedSections.has(uc)) applyWorkedStyle(uc);
+  if (pendingHighlightCode === uc || highlightedSectionCode === uc) highlightSection(uc);
 }
+
+function highlightSection(code){
+  const uc = (code || '').toUpperCase();
+  if (!uc) return;
+  const entry = sectionPolygonRegistry.get(uc);
+  if (!entry){
+    highlightedSectionCode = uc;
+    pendingHighlightCode = uc;
+    sectionHighlightGroup.clearLayers();
+    return;
+  }
+  pendingHighlightCode = null;
+  highlightedSectionCode = uc;
+  sectionHighlightGroup.clearLayers();
+  let drawn = false;
+  entry.layers.forEach(layer => {
+    try {
+      const gj = layer.toGeoJSON();
+      const highlight = L.geoJSON(gj, {
+        interactive: false,
+        pane: 'sectionHighlightPane',
+        style: () => ({
+          color: entry.color || '#fef3c7',
+          weight: 3,
+          opacity: 0.95,
+          fillOpacity: 0
+        })
+      }).addTo(sectionHighlightGroup);
+      if (highlight.bringToFront) highlight.bringToFront();
+      drawn = true;
+    } catch {}
+  });
+  if (sectionHighlightGroup.bringToFront) sectionHighlightGroup.bringToFront();
+  if (!drawn) pendingHighlightCode = uc;
+}
+
+function clearSectionHighlight(){
+  highlightedSectionCode = null;
+  pendingHighlightCode = null;
+  sectionHighlightGroup.clearLayers();
+}
+
+map.on('click', clearSectionHighlight);
 
 async function loadSections(){
   try {
@@ -131,6 +180,7 @@ async function loadSections(){
         radius: 7, color:'#999', weight:1, fillColor:'#ddd', fillOpacity:0.4
       }).bindTooltip(`${code}`, {sticky:true});
       pin._sectionCode = code.toUpperCase();
+      pin.on('click', (ev)=>{ highlightSection(pin._sectionCode); L.DomEvent.stop(ev); });
       sectionPinsLayer.addLayer(pin);
       if (workedSections.has(pin._sectionCode)) markPinWorked(pin);
     });
@@ -166,6 +216,7 @@ async function loadSectionPolygons(){
               layer._sectionCode = uc;
               layer.bindTooltip(`${uc}${name ? ` • ${name}` : ''}`, {sticky:true});
               registerSectionPolygon(uc, layer, divColor);
+              layer.on('click', (ev)=>{ highlightSection(uc); L.DomEvent.stop(ev); });
               if (workedSections.has(uc)) applyWorkedStyle(uc);
             }
           }

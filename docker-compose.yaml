@@ -10,4 +10,4 @@ services:
       - ./config:/config:ro
       - ./app/static:/app/static
     environment:
-      - CONFIG_FILE=/config/config.yml
+      - CONFIG_FILE=/config/config.yaml
