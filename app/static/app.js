@@ -59,10 +59,68 @@ function setOrigin(o){
   originTxt.textContent = `${o.grid||''} (${o.lat.toFixed(3)}, ${o.lon.toFixed(3)})`;
 }
 
-// Sections (centroids only) on map
+// Sections (boundaries + centroids) on map
 const workedSections = new Set();
+
+const sectionPolygonGroup = L.layerGroup().addTo(map);
 let sectionPinsLayer = L.layerGroup().addTo(map);
 let sectionCentroids = {};
+
+const sectionPolygonRegistry = new Map();
+const divisionColorMap = new Map();
+const DIVISION_COLOR_PALETTE = [
+  '#2563eb','#059669','#d97706','#7c3aed','#dc2626',
+  '#0891b2','#f97316','#14b8a6','#a855f7','#ef4444',
+  '#22c55e','#6366f1','#fb7185','#0ea5e9','#f59e0b'
+];
+let divisionColorIndex = 0;
+
+function colorForDivision(name){
+  const key = (name || '').toUpperCase();
+  if (!divisionColorMap.has(key)){
+    const color = DIVISION_COLOR_PALETTE[divisionColorIndex % DIVISION_COLOR_PALETTE.length];
+    divisionColorIndex += 1;
+    divisionColorMap.set(key, color);
+  }
+  return divisionColorMap.get(key);
+}
+
+function markPinWorked(pin){
+  pin.setStyle({ fillColor: '#bbb', fillOpacity: 0.9, color: '#888' });
+  if (pin.bringToFront) pin.bringToFront();
+}
+
+function applyWorkedStyle(code){
+  if (!code) return;
+  const uc = code.toUpperCase();
+  const entry = sectionPolygonRegistry.get(uc);
+  if (!entry) return;
+  entry.worked = true;
+  entry.layers.forEach(layer => {
+    layer.setStyle({
+      color: '#1f2937',
+      weight: 2,
+      opacity: 0.9,
+      fillColor: entry.color,
+      fillOpacity: 0.35
+    });
+    if (layer.bringToFront) layer.bringToFront();
+  });
+}
+
+function registerSectionPolygon(code, layer, color){
+  const uc = (code || '').toUpperCase();
+  if (!uc) return;
+  let entry = sectionPolygonRegistry.get(uc);
+  if (!entry){
+    entry = { color, layers: [], worked: false };
+    sectionPolygonRegistry.set(uc, entry);
+  }
+  entry.color = color;
+  entry.layers.push(layer);
+  if (workedSections.has(uc)) applyWorkedStyle(uc);
+}
+
 async function loadSections(){
   try {
     const res = await fetch('/static/sections.json');
@@ -70,21 +128,62 @@ async function loadSections(){
     sectionCentroids = await res.json();
     Object.entries(sectionCentroids).forEach(([code, pt])=>{
       const pin = L.circleMarker([pt.lat, pt.lon], {
-        radius: 5, color:'#999', weight:1, fillColor:'#ddd', fillOpacity:0.4
+        radius: 7, color:'#999', weight:1, fillColor:'#ddd', fillOpacity:0.4
       }).bindTooltip(`${code}`, {sticky:true});
       pin._sectionCode = code.toUpperCase();
       sectionPinsLayer.addLayer(pin);
+      if (workedSections.has(pin._sectionCode)) markPinWorked(pin);
     });
   } catch {}
 }
 loadSections();
+
+async function loadSectionPolygons(){
+  try {
+    const res = await fetch('/static/data/divisions.json');
+    if (!res.ok) return;
+    const manifest = await res.json();
+    const entries = Object.entries(manifest);
+    await Promise.all(entries.map(async ([division, path])=>{
+      try {
+        const gjRes = await fetch(path);
+        if (!gjRes.ok) return;
+        const geojson = await gjRes.json();
+        const divColor = colorForDivision(division);
+        L.geoJSON(geojson, {
+          style: () => ({
+            color: divColor,
+            weight: 1,
+            opacity: 0.45,
+            fillColor: divColor,
+            fillOpacity: 0.05
+          }),
+          onEachFeature: (feature, layer) => {
+            const code = feature?.properties?.section_code || feature?.properties?.SECTION || '';
+            const name = feature?.properties?.section_name || feature?.properties?.SECTION_NAME || '';
+            const uc = code.toUpperCase();
+            if (uc){
+              layer._sectionCode = uc;
+              layer.bindTooltip(`${uc}${name ? ` • ${name}` : ''}`, {sticky:true});
+              registerSectionPolygon(uc, layer, divColor);
+              if (workedSections.has(uc)) applyWorkedStyle(uc);
+            }
+          }
+        }).addTo(sectionPolygonGroup);
+      } catch {}
+    }));
+  } catch {}
+}
+loadSectionPolygons();
+
 function graySection(code){
   if (!code) return;
   const uc = code.toUpperCase();
   if (workedSections.has(uc)) return;
   workedSections.add(uc);
   workedCount.textContent = workedSections.size.toString();
-  sectionPinsLayer.eachLayer(l=>{ if (l._sectionCode===uc) l.setStyle({fillColor:'#bbb', fillOpacity:0.9, color:'#888'}); });
+  sectionPinsLayer.eachLayer(l=>{ if (l._sectionCode===uc) markPinWorked(l); });
+  applyWorkedStyle(uc);
 }
 
 // Curved arc via quadratic bezier (for map)
