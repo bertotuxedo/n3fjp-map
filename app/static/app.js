@@ -69,6 +69,17 @@ const sectionHighlightGroup = L.layerGroup().addTo(map);
 let sectionPinsLayer = L.layerGroup().addTo(map);
 let sectionCentroids = {};
 
+function sectionInfo(code){
+  const uc = (code || '').toUpperCase();
+  if (!uc) return null;
+  return sectionCentroids && sectionCentroids[uc] ? sectionCentroids[uc] : null;
+}
+
+function sectionName(code){
+  const info = sectionInfo(code);
+  return info && info.name ? info.name : '';
+}
+
 const sectionPolygonRegistry = new Map();
 const divisionColorMap = new Map();
 const DIVISION_COLOR_PALETTE = [
@@ -176,9 +187,10 @@ async function loadSections(){
     if (!res.ok) return;
     sectionCentroids = await res.json();
     Object.entries(sectionCentroids).forEach(([code, pt])=>{
+      const label = pt?.name ? `${code} • ${pt.name}` : `${code}`;
       const pin = L.circleMarker([pt.lat, pt.lon], {
         radius: 7, color:'#999', weight:1, fillColor:'#ddd', fillOpacity:0.4
-      }).bindTooltip(`${code}`, {sticky:true});
+      }).bindTooltip(label, {sticky:true});
       pin._sectionCode = code.toUpperCase();
       pin.on('click', (ev)=>{ highlightSection(pin._sectionCode); L.DomEvent.stop(ev); });
       sectionPinsLayer.addLayer(pin);
@@ -209,9 +221,12 @@ async function loadSectionPolygons(){
             fillOpacity: 0.05
           }),
           onEachFeature: (feature, layer) => {
-            const code = feature?.properties?.section_code || feature?.properties?.SECTION || '';
-            const name = feature?.properties?.section_name || feature?.properties?.SECTION_NAME || '';
+            const props = feature?.properties || {};
+            let code = props.section_code || props.SECTION || props.Section || props.id || props.ID || '';
+            if (typeof code !== 'string') code = `${code ?? ''}`;
             const uc = code.toUpperCase();
+            let name = props.section_name || props.SECTION_NAME || props.name || props.NAME || '';
+            if (!name) name = sectionName(uc);
             if (uc){
               layer._sectionCode = uc;
               layer.bindTooltip(`${uc}${name ? ` • ${name}` : ''}`, {sticky:true});

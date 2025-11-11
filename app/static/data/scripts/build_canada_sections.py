@@ -152,9 +152,9 @@ SPECIAL_ONE_CSD_FRAGMENT = canon_set(["South Algonquin", "Algonquin Sud"])
 PROV_TO_SECTION = {
     # Provinces
     "alberta": "AB",
-    "colombie britanique": "BC",    # sometimes “Colombie-Britannique”
-    "colombie britanique": "BC",
+    "colombie britanique": "BC",    # legacy typo spellings still present in some exports
     "colombie-britannique": "BC",
+    "colombie britannique": "BC",
     "manitoba": "MB",
     "nouveau brunswick": "NB",
     "terre neuve et labrador": "NL",

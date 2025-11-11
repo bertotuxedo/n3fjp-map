@@ -74,6 +74,7 @@
   "WY":  {"lat": 43.1,  "lon": -107.6,"name": "Wyoming"},
 
   "AB":  {"lat": 53.9,  "lon": -115.0,"name": "Alberta (RAC)"},
+  "GH":  {"lat": 43.722, "lon": -79.389,"name": "Greater Horseshoe (RAC)"},
   "BC":  {"lat": 54.5,  "lon": -125.0,"name": "British Columbia (RAC)"},
   "MB":  {"lat": 54.7,  "lon": -98.0, "name": "Manitoba (RAC)"},
   "NB":  {"lat": 46.5,  "lon": -66.5, "name": "New Brunswick (RAC)"},
@@ -89,5 +90,5 @@
 
   "MX": {"lat": 23.8,  "lon": -102.4,  "name": "Mexico"},
   "DX":  {"lat": 20.0,  "lon": 0.0,   "name": "DX (Outside US/Canada)"},
-  "TER": {"lat": 18.1,  "lon": -74.8,  "name": "Territories"}
+  "TER": {"lat": 65.211, "lon": -123.432, "name": "Territories (RAC)"}
 }
