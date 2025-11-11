@@ -154,6 +154,7 @@ PROV_TO_SECTION = {
     "alberta": "AB",
     "colombie britanique": "BC",    # sometimes “Colombie-Britannique”
     "colombie britanique": "BC",
+    "colombie britannique": "BC",
     "colombie-britannique": "BC",
     "manitoba": "MB",
     "nouveau brunswick": "NB",
