@@ -42,6 +42,7 @@
   "ORG": {"lat": 35.2,  "lon": -116.6,  "name": "Orange"},
   "OR":  {"lat": 44.0,  "lon": -120.5, "name": "Oregon"},
   "PAC": {"lat": 21.3,  "lon": -157.8,"name": "Pacific (HI)"},
+  "PR": {"lat": 18.2,  "lon": -66.4,"name": "Puerto Rico"},
   "RI":  {"lat": 41.6,  "lon": -71.6,  "name": "Rhode Island"},
   "SB":  {"lat": 34.8,  "lon": -119.8,"name": "Santa Barbara"},
   "SCV": {"lat": 36.5,  "lon": -121.3,  "name": "Santa Clara Valley"},
