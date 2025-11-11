@@ -408,6 +408,25 @@ def resolve_country_key(name: Optional[str]) -> Optional[str]:
     return COUNTRY_ALIAS_INDEX.get(key, key)
 
 
+def country_centroid(name: Optional[str]) -> Optional[Dict[str, Any]]:
+    key = resolve_country_key(name)
+    if not key:
+        return None
+    info = COUNTRY_CENTROIDS.get(key)
+    if not info:
+        return None
+    lat = info.get("lat")
+    lon = info.get("lon")
+    if lat is None or lon is None:
+        return None
+    dest = {"lat": lat, "lon": lon, "grid": None}
+    try:
+        dest["grid"] = maidenhead_from_latlon(lat, lon)
+    except Exception:
+        dest["grid"] = None
+    return dest
+
+
 try:
     with open("static/data/centroids/countries.geojson", "r", encoding="utf-8") as f:
         countries_geo = json.load(f)
@@ -714,10 +733,21 @@ async def n3fjp_client():
                             if dx_flag:
                                 qrz_result = await qrz_client.lookup(call)
                                 if qrz_result:
-                                    if "country" in qrz_result and not base_meta.get("country"):
-                                        base_meta["country"] = qrz_result["country"]
-                                    if qrz_result.get("dest"):
-                                        dest = qrz_result["dest"]
+                                    qrz_country = qrz_result.get("country")
+                                    if qrz_country:
+                                        base_meta["country"] = qrz_country
+                                    qrz_dest = qrz_result.get("dest")
+                                    if qrz_dest and qrz_dest.get("lat") is not None and qrz_dest.get("lon") is not None:
+                                        dest = qrz_dest
+                                    if not dest:
+                                        centroid = country_centroid(base_meta.get("country") or qrz_country)
+                                        if centroid:
+                                            dest = centroid
+
+                        if not dest and base_meta.get("country"):
+                            centroid = country_centroid(base_meta.get("country"))
+                            if centroid:
+                                dest = centroid
 
                         if dest:
                             hub.pending_meta.pop(call_key, None)
