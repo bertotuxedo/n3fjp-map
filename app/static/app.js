@@ -38,11 +38,195 @@ function morseDashArray(){
 }
 const CW_DASH = morseDashArray();
 
+const recentContacts = [];
+const mapSegments = new Map();
+let selectedContactId = null;
+let selectedMapHighlight = null;
+let globeHighlight = null;
+
 function passFilters(meta){
   if (bandSel && bandSel.value && (meta.band||"") !== bandSel.value) return false;
   if (modeSel && modeSel.value && (meta.mode||"").toUpperCase() !== modeSel.value) return false;
   if (operSel && operSel.value && (meta.operator||"") !== operSel.value) return false;
   return true;
+}
+
+function formatLatLon(point){
+  if (!point) return '';
+  const { lat, lon } = point;
+  if (typeof lat === 'number' && typeof lon === 'number'){
+    return `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
+  }
+  return '';
+}
+
+function formatLocation(point, fallback=''){
+  if (!point) return fallback;
+  if (point.grid) return point.grid;
+  const latlon = formatLatLon(point);
+  return latlon || fallback;
+}
+
+function formatFromContact(contact){
+  if (!contact) return 'Origin';
+  return contact.meta?.operator || formatLocation(contact.from, contact.from?.grid ? contact.from.grid : 'Origin');
+}
+
+function formatToContact(contact){
+  if (!contact) return 'Destination';
+  const call = contact.meta?.call || formatLocation(contact.to, 'Destination');
+  const loc = formatLocation(contact.to, contact.meta?.country || '');
+  const suffix = loc && loc !== call ? ` (${loc})` : '';
+  return `${call}${suffix}`;
+}
+
+function formatMetaDetails(contact){
+  if (!contact) return '';
+  const parts = [];
+  if (contact.meta?.band) parts.push(`${contact.meta.band}m`);
+  if (contact.meta?.mode) parts.push((contact.meta.mode || '').toUpperCase());
+  if (contact.meta?.section) parts.push(contact.meta.section);
+  if (contact.meta?.country) parts.push(contact.meta.country);
+  return parts.join(' • ');
+}
+
+function formatTimestamp(contact){
+  if (!contact || !contact.timestamp) return '';
+  const date = new Date(contact.timestamp * 1000);
+  return date.toLocaleString();
+}
+
+function registerContact(data){
+  if (!data || data.id == null) return;
+  let ts = typeof data.timestamp === 'number' ? data.timestamp : parseFloat(data.timestamp);
+  if (!Number.isFinite(ts)) ts = Date.now()/1000;
+  const contact = {
+    id: data.id,
+    timestamp: ts,
+    meta: data.meta ? { ...data.meta } : {},
+    from: data.from ? { ...data.from } : null,
+    to: data.to ? { ...data.to } : null,
+  };
+  const existingIndex = recentContacts.findIndex(c => c.id === contact.id);
+  if (existingIndex >= 0) recentContacts.splice(existingIndex, 1);
+  recentContacts.push(contact);
+  recentContacts.sort((a,b)=>a.timestamp-b.timestamp);
+  while (recentContacts.length > 150) recentContacts.shift();
+  if (selectedContactId === contact.id) highlightContact(contact);
+}
+
+function toggleContactSelection(id){
+  if (selectedContactId === id) clearSelectedContact();
+  else selectContact(id);
+}
+
+function selectContact(id){
+  const contact = recentContacts.find(c => c.id === id);
+  if (!contact) return;
+  if (!passFilters(contact.meta || {})) return;
+  selectedContactId = id;
+  highlightContact(contact);
+  renderRecentList();
+}
+
+function clearSelectedContact(triggerRender = true){
+  selectedContactId = null;
+  if (selectedMapHighlight){
+    map.removeLayer(selectedMapHighlight);
+    selectedMapHighlight = null;
+  }
+  setGlobeHighlight(null);
+  if (triggerRender) renderRecentList();
+}
+
+function highlightContact(contact){
+  if (selectedMapHighlight){
+    map.removeLayer(selectedMapHighlight);
+    selectedMapHighlight = null;
+  }
+  if (contact && contact.from && contact.to && typeof contact.from.lat === 'number' && typeof contact.from.lon === 'number' && typeof contact.to.lat === 'number' && typeof contact.to.lon === 'number'){
+    const latlngs = arcPoints({lat:contact.from.lat,lon:contact.from.lon},{lat:contact.to.lat,lon:contact.to.lon},0.18,200);
+    selectedMapHighlight = L.polyline(latlngs, { color:'#ffffff', weight:4, opacity:0.85 }).addTo(map);
+    if (selectedMapHighlight.bringToFront) selectedMapHighlight.bringToFront();
+  }
+  setGlobeHighlight(contact);
+}
+
+function renderRecentList(){
+  if (!recentBox) return;
+  const frag = document.createDocumentFragment();
+  const filtered = recentContacts
+    .filter(c => passFilters(c.meta || {}))
+    .sort((a,b)=>b.timestamp-a.timestamp)
+    .slice(0, 50);
+  filtered.forEach(contact => {
+    const entry = document.createElement('div');
+    entry.className = 'recent-entry' + (contact.id === selectedContactId ? ' active' : '');
+    entry.dataset.contactId = contact.id;
+    const title = document.createElement('div');
+    title.className = 'recent-title';
+    title.textContent = `${formatFromContact(contact)} → ${formatToContact(contact)}`;
+    const metaLine = document.createElement('div');
+    metaLine.className = 'recent-meta';
+    const metaParts = [formatTimestamp(contact), formatMetaDetails(contact)].filter(Boolean);
+    metaLine.textContent = metaParts.join(' • ');
+    entry.appendChild(title);
+    entry.appendChild(metaLine);
+    entry.addEventListener('click', ()=> toggleContactSelection(contact.id));
+    frag.appendChild(entry);
+  });
+  recentBox.replaceChildren(frag);
+}
+
+function setGlobeHighlight(contact){
+  if (!contact || !contact.from || !contact.to || typeof contact.from.lat !== 'number' || typeof contact.from.lon !== 'number' || typeof contact.to.lat !== 'number' || typeof contact.to.lon !== 'number'){
+    globeHighlight = null;
+    syncGlobeArcs();
+    return;
+  }
+  globeHighlight = {
+    startLat: contact.from.lat,
+    startLng: contact.from.lon,
+    endLat: contact.to.lat,
+    endLng: contact.to.lon,
+    color: '#ffffff',
+    dashLength: 1,
+    dashGap: 0,
+    animMs: 8000,
+    initialGap: 0,
+    expireAt: Date.now() + 60*60*1000,
+    meta: contact.meta || {},
+    id: `highlight-${contact.id}`,
+  };
+  syncGlobeArcs();
+}
+
+function setSegmentVisibility(segment, visible){
+  if (!segment) return;
+  segment._visible = visible;
+  let target = 0;
+  if (visible){
+    if (typeof segment._born === 'number' && typeof segment._life === 'number' && segment._life > 0){
+      const age = Date.now() - segment._born;
+      const base = segment._baseOpacity || 0.95;
+      target = Math.max(0, base * (1 - age/segment._life));
+    } else {
+      target = segment._baseOpacity || 0.95;
+    }
+    segment._currentOpacity = target;
+  }
+  segment.setStyle({ opacity: target });
+}
+
+function applyFiltersToSegments(){
+  mapSegments.forEach(info => {
+    const visible = passFilters(info.meta || {});
+    setSegmentVisibility(info.segment, visible);
+  });
+  syncGlobeArcs();
+  const selected = recentContacts.find(c => c.id === selectedContactId);
+  if (selected && !passFilters(selected.meta || {})) clearSelectedContact(false);
+  renderRecentList();
 }
 
 // ---------- Leaflet map (kept) ----------
@@ -179,7 +363,10 @@ function clearSectionHighlight(){
   sectionHighlightGroup.clearLayers();
 }
 
-map.on('click', clearSectionHighlight);
+map.on('click', ()=>{
+  clearSectionHighlight();
+  if (selectedContactId !== null) clearSelectedContact();
+});
 
 async function loadSections(){
   try {
@@ -273,7 +460,7 @@ function animateSlidingSegment(latlngs, lifeSec, styleOpts){
   const total=latlngs.length; if (total<4) return null;
   const segPts=Math.max(3, Math.floor(total*0.5));
   const line=L.polyline([], styleOpts).addTo(map);
-  const periodMs=2000, start=performance.now();
+  const periodMs=4000, start=performance.now();
   function update(now){
     const t=((now-start)%periodMs)/periodMs;
     const head=Math.floor(t*(total-1));
@@ -283,18 +470,33 @@ function animateSlidingSegment(latlngs, lifeSec, styleOpts){
   }
   line._animHandle=requestAnimationFrame(update);
   const born=Date.now(), life=(lifeSec||60)*1000;
+  const baseOpacity=(styleOpts && typeof styleOpts.opacity==='number')? styleOpts.opacity : 0.95;
+  line._baseOpacity = baseOpacity;
+  line._visible = true;
+  line._currentOpacity = baseOpacity;
+  line._born = born;
+  line._life = life;
+  line._expiresAt = born + life;
   (function fade(){
-    const age=Date.now()-born, op=Math.max(0,0.95*(1-age/life));
-    line.setStyle({opacity:op});
-    if (age<life) requestAnimationFrame(fade); else { cancelAnimationFrame(line._animHandle); map.removeLayer(line); }
+    const age=Date.now()-born;
+    const fadeOp=Math.max(0, baseOpacity*(1-age/life));
+    const target=line._visible ? fadeOp : 0;
+    line._currentOpacity = target;
+    line.setStyle({opacity:target});
+    if (age<life){
+      requestAnimationFrame(fade);
+    } else {
+      cancelAnimationFrame(line._animHandle);
+      map.removeLayer(line);
+      if (typeof line._onExpire === 'function') line._onExpire();
+    }
   })();
   return line;
 }
 
 // Draw path on map
 function drawPathMap(payload){
-  const {from,to,meta,ttl}=payload; if (!from||!to) return;
-  if (!passFilters(meta||{})) return;
+  const {from,to,meta,ttl,id}=payload || {}; if (!from||!to) return;
 
   const clr=bandColor(meta?.band);
   const mode=(meta?.mode||"").toUpperCase();
@@ -306,12 +508,26 @@ function drawPathMap(payload){
   const seg=animateSlidingSegment(latlngs, ttl||60, style);
   const tip=[ meta?.call||"", meta?.band?`${meta.band}m`:"", mode||"", meta?.section?`→ ${meta.section}`:"", meta?.operator?`• ${meta.operator}`:"" ]
     .filter(Boolean).join(" • ");
-  if (seg) seg.bindTooltip(tip,{sticky:true});
+  if (seg){
+    const segmentId = id != null ? id : `anon-${Date.now()}-${Math.random()}`;
+    seg.bindTooltip(tip,{sticky:true});
+    seg._pathId = segmentId;
+    seg._onExpire = ()=>{ mapSegments.delete(segmentId); };
+    mapSegments.set(segmentId, { segment: seg, meta: meta || {} });
+    setSegmentVisibility(seg, passFilters(meta || {}));
+  }
 }
 
 // ---------- Globe.gl (updated animation like reference) ----------
 let globe, globeArcs=[];
 const globeEl = document.getElementById('globeCanvas');
+
+function syncGlobeArcs(){
+  if (!globe) return;
+  const base = globeArcs.filter(arc => passFilters(arc.meta || {}));
+  const data = globeHighlight ? base.concat([globeHighlight]) : base;
+  globe.arcsData(data);
+}
 
 function ensureGlobe(){
   if (globe) return globe;
@@ -342,6 +558,7 @@ function ensureGlobe(){
 
   // TTL purge
   setInterval(()=> purgeExpiredGlobeArcs(), 1000);
+  syncGlobeArcs();
   return globe;
 }
 
@@ -349,10 +566,13 @@ function purgeExpiredGlobeArcs(){
   const now = Date.now();
   const before = globeArcs.length;
   globeArcs = globeArcs.filter(a => now < a.expireAt);
-  if (globe && globeArcs.length !== before) globe.arcsData(globeArcs.slice());
+  if (globe && globeArcs.length !== before) syncGlobeArcs();
 }
 
-function addGlobeArc(from, to, meta, ttlSec){
+function addGlobeArc(path){
+  if (!path) return;
+  const { from, to, meta, ttl, id } = path;
+  if (!from || !to) return;
   const bandClr = bandColor(meta?.band);
 
   // --- Make motion like the original demo ---
@@ -360,7 +580,7 @@ function addGlobeArc(from, to, meta, ttlSec){
   // plus a randomized initial phase so arcs aren’t in lockstep.
   const dashLength = Math.random();             // 0..1
   const dashGap    = Math.random();             // 0..1
-  const animMs     = 500 + Math.random()*4000;  // 500..4500 ms
+  const animMs     = 2000 + Math.random()*5000; // slower sweep
   const initialGap = Math.random();             // phase seed
 
   const arc = {
@@ -368,11 +588,12 @@ function addGlobeArc(from, to, meta, ttlSec){
     endLat:   to.lat,   endLng:   to.lon,
     color:    bandClr,
     dashLength, dashGap, animMs, initialGap,
-    expireAt: Date.now() + (ttlSec||60)*1000,
-    meta
+    expireAt: Date.now() + (ttl||60)*1000,
+    meta: meta || {},
+    id
   };
   globeArcs.push(arc);
-  if (globe) globe.arcsData(globeArcs.slice());
+  syncGlobeArcs();
 }
 
 // ---------- View toggle ----------
@@ -387,40 +608,14 @@ btnGlobe.addEventListener('click', ()=>{
   document.getElementById('map').style.display='none';
   globeEl.style.display='block';
   ensureGlobe();
+  syncGlobeArcs();
 });
 
-// ---------- “Pretty” recent frames ----------
-function getTag(xml, tag){ const m = xml.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i')); return m ? m[1].trim() : null; }
-function has(xml, token){ return xml.toUpperCase().includes(token.toUpperCase()); }
-function prettyFrame(xml){
-  try {
-    if (has(xml,"APIVERRESPONSE")) return `API version: ${getTag(xml,"APIVER")||"?"}`;
-    if (has(xml,"PROGRAMRESPONSE")){ const p=getTag(xml,"PGM")||"Program", v=getTag(xml,"VER")||""; return `Program: ${p}${v? " " + v:""}`; }
-    if (has(xml,"OPINFORESPONSE")){
-      const call=getTag(xml,"CALL")||"—", sect=getTag(xml,"SECTION")||getTag(xml,"ARRL_SECT")||"—";
-      const cls=getTag(xml,"CLASS")||"—"; const lat=getTag(xml,"LAT"), lon=getTag(xml,"LONG")||getTag(xml,"LON");
-      const loc=(lat&&lon)? ` @ ${parseFloat(lat).toFixed(3)}, ${parseFloat(lon).toFixed(3)}`:"";
-      return `OPINFO: ${call} • ${cls} • ${sect}${loc}`;
-    }
-    if (has(xml,"SETUPDATESTATERESPONSE")) return `Subscribed to updates: ${getTag(xml,"VALUE")}`;
-    if (has(xml,"ENTEREVENT")){
-      const call=getTag(xml,"CALL")||"—", band=getTag(xml,"BAND")||"—", mode=getTag(xml,"MODE")||getTag(xml,"MODETEST")||"—";
-      const sect=getTag(xml,"SECTION")||getTag(xml,"ARRL_SECT")||"", op=getTag(xml,"OPERATOR")||getTag(xml,"MYCALL")||"", ts=getTag(xml,"TIME_ON")||"";
-      return `ENTER: ${call} • ${band}m • ${mode}${sect? " → "+sect:""}${op? " • "+op:""}${ts? " • "+ts:""}`;
-    }
-    if (has(xml,"COUNTRYLISTLOOKUPRESPONSE")){
-      const call=getTag(xml,"CALL")||"—", lat=getTag(xml,"LAT"), lon=getTag(xml,"LON")||getTag(xml,"LONG"), ctry=getTag(xml,"COUNTRY")||"";
-      const loc=(lat&&lon)? ` ${parseFloat(lat).toFixed(3)}, ${parseFloat(lon).toFixed(3)}`:"";
-      return `Lookup: ${call}${loc} ${ctry? "• "+ctry:""}`.trim();
-    }
-  } catch {}
-  return xml.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
-}
-function pushRecent(xml){
-  const el=document.createElement('div'); el.textContent=prettyFrame(xml);
-  recentBox && recentBox.prepend(el);
-  if (recentBox) while (recentBox.childNodes.length>20) recentBox.removeChild(recentBox.lastChild);
-}
+if (recentBox) recentBox.addEventListener('click', (ev)=>{ if (ev.target === recentBox) clearSelectedContact(); });
+
+[bandSel, modeSel, operSel].forEach(sel => {
+  if (sel) sel.addEventListener('change', ()=> applyFiltersToSegments());
+});
 
 // ---------- Status & WS ----------
 function updateOperators(list){
@@ -428,6 +623,7 @@ function updateOperators(list){
   operSel.innerHTML='<option value="">All</option>';
   (list||[]).forEach(op=>{ const o=document.createElement('option'); o.value=op; o.textContent=op; operSel.appendChild(o); });
   if ([...operSel.options].some(o=>o.value===cur)) operSel.value=cur;
+  applyFiltersToSegments();
 }
 
 async function refreshStatus(){
@@ -460,15 +656,19 @@ ws.onmessage = (ev)=>{
     } else if (msg.type==='origin'){
       setOrigin(msg.data);
     } else if (msg.type==='path'){
+      const data = msg.data || {};
       // map
-      drawPathMap(msg.data);
+      drawPathMap(data);
       // globe
-      addGlobeArc(msg.data.from, msg.data.to, msg.data.meta||{}, msg.data.ttl||60);
+      addGlobeArc(data);
+      // contacts panel
+      registerContact(data);
+      renderRecentList();
       // banner
-      const c = msg.data.meta?.call || '—';
+      const c = data.meta?.call || '—';
       bannerText.textContent = `Last logged: ${c} • ${new Date().toLocaleTimeString()}`;
       // section dim
-      if (msg.data.meta?.section) graySection(msg.data.meta.section);
+      if (data.meta?.section) graySection(data.meta.section);
     } else if (msg.type==='operators'){
       updateOperators(msg.data||[]);
     } else if (msg.type==='section_hit'){
@@ -481,5 +681,9 @@ ws.onmessage = (ev)=>{
 
 // seed recent (pretty)
 (async function loadRecent(){
-  try{ const r=await fetch('/recent').then(r=>r.json()); (r.recent||[]).slice(-10).forEach(pushRecent); } catch {}
+  try{
+    const r=await fetch('/recent').then(r=>r.json());
+    (r.recent||[]).forEach(registerContact);
+    renderRecentList();
+  } catch {}
 })();

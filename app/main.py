@@ -9,10 +9,38 @@ import json
 import logging
 from typing import Set, Dict, Any, Optional, Deque, Tuple, List
 from collections import deque
+import copy
+
+import httpx
+import xmltodict
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+
+# ---------- Optional .env loader ----------
+def load_dotenv(path: str = ".env"):
+    if not path:
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key = key.strip()
+                if not key or key in os.environ:
+                    continue
+                val = val.strip().strip('"').strip("'")
+                os.environ[key] = val
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        logging.warning(f"Could not load .env file {path}: {e}")
+
+
+load_dotenv()
 
 # ---------- Optional YAML config ----------
 def load_yaml_config():
@@ -55,11 +83,119 @@ N3FJP_PORT = cfg_get("N3FJP_PORT", 1100)
 
 WFD_MODE = cfg_get("WFD_MODE", False)
 PREFER_SECTION_ALWAYS = cfg_get("PREFER_SECTION_ALWAYS", False)
-TTL_SECONDS = cfg_get("TTL_SECONDS", 60)
+TTL_SECONDS = cfg_get("TTL_SECONDS", 600)
 BAND_FILTER = set([b.strip() for b in str(cfg_get("BAND_FILTER", "")).split(",") if b.strip()])
 MODE_FILTER = set([m.strip().upper() for m in str(cfg_get("MODE_FILTER", "")).split(",") if m.strip()])
 
 HEARTBEAT_SECONDS = max(3, cfg_get("HEARTBEAT_SECONDS", 5))
+
+QRZ_USERNAME = cfg_get("QRZ_USERNAME", "")
+QRZ_PASSWORD = cfg_get("QRZ_PASSWORD", "")
+QRZ_AGENT = cfg_get("QRZ_AGENT", "n3fjp-map") or "n3fjp-map"
+
+
+class QRZClient:
+    def __init__(self, username: str, password: str, agent: str):
+        self.username = (username or "").strip()
+        self.password = (password or "").strip()
+        self.agent = (agent or "n3fjp-map").strip() or "n3fjp-map"
+        self.session_key: Optional[str] = None
+        self.session_expiry: float = 0.0
+        self.lock = asyncio.Lock()
+
+    async def _login(self) -> None:
+        if not self.username or not self.password:
+            return
+        async with self.lock:
+            if self.session_key and time.time() < self.session_expiry:
+                return
+            params = {
+                "username": self.username,
+                "password": self.password,
+                "agent": self.agent,
+            }
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    resp = await client.get("https://xmldata.qrz.com/xml/current/", params=params)
+                resp.raise_for_status()
+                data = xmltodict.parse(resp.text)
+                session = data.get("QRZDatabase", {}).get("Session", {})
+                key = session.get("Key")
+                if key:
+                    self.session_key = key
+                    # QRZ sessions expire after a period; refresh periodically.
+                    self.session_expiry = time.time() + 10 * 60
+                else:
+                    self.session_key = None
+            except Exception as e:
+                logging.warning(f"QRZ login failed: {e}")
+                self.session_key = None
+
+    async def lookup(self, call: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not call:
+            return None
+        if not self.username or not self.password:
+            return None
+        if not self.session_key or time.time() >= self.session_expiry:
+            await self._login()
+        if not self.session_key:
+            return None
+        params = {
+            "s": self.session_key,
+            "callsign": call,
+            "agent": self.agent,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get("https://xmldata.qrz.com/xml/current/", params=params)
+            resp.raise_for_status()
+            data = xmltodict.parse(resp.text)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                # session likely expired
+                self.session_key = None
+            logging.warning(f"QRZ lookup HTTP error for {call}: {e}")
+            return None
+        except Exception as e:
+            logging.warning(f"QRZ lookup failed for {call}: {e}")
+            return None
+
+        root = data.get("QRZDatabase", {})
+        if "Session" in root and root["Session"].get("Key"):
+            self.session_key = root["Session"].get("Key")
+            self.session_expiry = time.time() + 10 * 60
+
+        callsign = root.get("Callsign")
+        if not callsign:
+            return None
+
+        lat_s = callsign.get("lat") or callsign.get("latitude")
+        lon_s = callsign.get("lon") or callsign.get("longitude")
+        grid = callsign.get("grid") or callsign.get("Grid")
+        country = callsign.get("country") or callsign.get("Country")
+
+        dest: Optional[Dict[str, Any]] = None
+        try:
+            if lat_s and lon_s:
+                lat = float(lat_s)
+                lon = float(lon_s)
+                dest = {"lat": lat, "lon": lon, "grid": grid or maidenhead_from_latlon(lat, lon)}
+            elif grid:
+                ll = latlon_from_maidenhead(grid)
+                if ll:
+                    dest = {"lat": ll["lat"], "lon": ll["lon"], "grid": grid}
+        except Exception:
+            dest = None
+
+        result: Dict[str, Any] = {}
+        if dest:
+            result["dest"] = dest
+        if country:
+            result["country"] = country
+        return result or None
+
+
+qrz_client = QRZClient(QRZ_USERNAME, QRZ_PASSWORD, QRZ_AGENT)
 
 # ---------- FastAPI ----------
 app = FastAPI()
@@ -90,6 +226,9 @@ class Hub:
         }
         self.recent_raw: Deque[str] = deque(maxlen=100)
         self.recent_draw: Deque[Tuple[str, str, str, float]] = deque(maxlen=128)  # (call, band, mode, ts)
+        self.recent_paths: Deque[Dict[str, Any]] = deque(maxlen=150)
+        self.next_path_id: int = 1
+        self.pending_meta: Dict[str, Dict[str, Any]] = {}
         self.operators_seen: Set[str] = set()
         self.sections_worked: Set[str] = set()
         # metrics
@@ -155,6 +294,75 @@ class Hub:
         self.recent_draw.append((key[0], key[1], key[2], now))
         return True
 
+    async def emit_path(
+        self,
+        dest: Dict[str, Any],
+        meta: Optional[Dict[str, Any]],
+        ttl: Optional[int] = None,
+        origin_override: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not dest:
+            return
+        if origin_override is None:
+            origin = copy.deepcopy(self.origin)
+        else:
+            origin = copy.deepcopy(origin_override)
+        if origin.get("lat") is None or origin.get("lon") is None:
+            return
+        if dest.get("lat") is None or dest.get("lon") is None:
+            return
+
+        safe_meta = {k: v for k, v in (meta or {}).items() if v not in (None, "")}
+        call = safe_meta.get("call")
+        band = safe_meta.get("band")
+        mode = safe_meta.get("mode")
+        ttl_val = ttl or TTL_SECONDS
+
+        if not self.should_draw(call, band, mode):
+            return
+
+        to = copy.deepcopy(dest)
+        if to.get("grid") is None:
+            try:
+                to["grid"] = maidenhead_from_latlon(to["lat"], to["lon"])
+            except Exception:
+                pass
+
+        path_id = self.next_path_id
+        self.next_path_id += 1
+
+        timestamp = time.time()
+        payload_data = {
+            "id": path_id,
+            "from": origin,
+            "to": to,
+            "meta": safe_meta,
+            "ttl": ttl_val,
+            "timestamp": timestamp,
+        }
+        payload = {"type": "path", "data": payload_data}
+
+        self.state["last_event_ts"] = timestamp
+        self.metrics["paths_drawn_total"] += 1
+        await self.broadcast(payload)
+        await self.broadcast({"type": "status", "data": self.compose_status()})
+
+        section = safe_meta.get("section")
+        if section:
+            if section not in self.sections_worked:
+                self.sections_worked.add(section)
+                self.metrics["sections_worked_total"] = len(self.sections_worked)
+                await self.broadcast({"type": "section_hit", "data": section})
+                await self.broadcast({"type": "sections_worked", "data": sorted(self.sections_worked)})
+
+        self.recent_paths.append({
+            "id": path_id,
+            "timestamp": timestamp,
+            "meta": safe_meta,
+            "from": origin,
+            "to": to,
+        })
+
 hub = Hub()
 
 # ---------- Sections (centroids only) ----------
@@ -210,6 +418,18 @@ def latlon_from_maidenhead(grid: str) -> Optional[Dict[str, float]]:
     except Exception:
         return None
 
+
+def parse_bool(value: Optional[str]) -> Optional[bool]:
+    if value is None:
+        return None
+    v = value.strip().lower()
+    if v in {"y", "yes", "true", "1"}:
+        return True
+    if v in {"n", "no", "false", "0"}:
+        return False
+    return None
+
+
 def section_to_latlon(section: Optional[str]) -> Optional[Dict[str, float]]:
     if not section: return None
     return SECTION_CENTROIDS.get(section.strip().upper())
@@ -221,7 +441,7 @@ async def status():
 
 @app.get("/recent")
 async def recent():
-    return JSONResponse({"recent": list(hub.recent_raw)})
+    return JSONResponse({"recent": list(hub.recent_paths)})
 
 # ---------- Metrics ----------
 @app.get("/metrics")
@@ -357,6 +577,7 @@ async def n3fjp_client():
                         mode = (tag(rec, "MODE") or tag(rec, "MODETEST") or "").upper()
                         sect = (first_tag(rec, "SECTION", "ARRL_SECT") or "").upper()
                         oper = tag(rec, "OPERATOR") or tag(rec, "MYCALL") or ""
+                        country = tag(rec, "COUNTRY") or ""
 
                         # track operators seen
                         if oper:
@@ -368,44 +589,53 @@ async def n3fjp_client():
                         tlat_s = tag(rec, "LAT")
                         tlon_s = first_tag(rec, "LON", "LONG")
                         dest = None
+                        base_meta = {
+                            "call": call,
+                            "band": band,
+                            "mode": mode,
+                            "section": sect,
+                            "operator": oper,
+                        }
+                        if country:
+                            base_meta["country"] = country
+                        call_key = (call or "").upper()
+
                         if (WFD_MODE or PREFER_SECTION_ALWAYS) and sect:
                             sec = section_to_latlon(sect)
-                            if sec: dest = {"lat": sec["lat"], "lon": sec["lon"], "grid": None}
+                            if sec:
+                                dest = {"lat": sec["lat"], "lon": sec["lon"], "grid": None}
                         if not dest and tlat_s and tlon_s:
                             lat = float(tlat_s); lon = parse_lon_west_positive(tlon_s)
-                            if lon is not None: dest = {"lat": lat, "lon": lon, "grid": None}
-                        if not dest and call:
-                            await _send(writer, f"<CMD><COUNTRYLISTLOOKUP><CALL>{call}</CALL></CMD>")
+                            if lon is not None:
+                                dest = {"lat": lat, "lon": lon, "grid": None}
 
-                        if dest and hub.origin["lat"] is not None and hub.should_draw(call, band, mode):
-                            if dest.get("grid") is None:
-                                try: dest["grid"] = maidenhead_from_latlon(dest["lat"], dest["lon"])
-                                except Exception: pass
-                            hub.state["last_event_ts"] = time.time()
-                            payload = {
-                                "type":"path",
-                                "data":{
-                                    "from": hub.origin,
-                                    "to": dest,
-                                    "meta": {"call": call, "band": band, "mode": mode, "section": sect, "operator": oper},
-                                    "ttl": TTL_SECONDS,
-                                }
-                            }
+                        if not dest and call:
+                            dx_flag = parse_bool(tag(rec, "DX"))
+                            if dx_flag is None:
+                                dx_flag = bool(country and "USA" not in country.upper() and "UNITED STATES" not in country.upper())
+                            if dx_flag:
+                                qrz_result = await qrz_client.lookup(call)
+                                if qrz_result:
+                                    if "country" in qrz_result and not base_meta.get("country"):
+                                        base_meta["country"] = qrz_result["country"]
+                                    if qrz_result.get("dest"):
+                                        dest = qrz_result["dest"]
+
+                        if dest:
+                            hub.pending_meta.pop(call_key, None)
                             now = time.time()
                             if now - last_emit > 0.01:
-                                hub.metrics["paths_drawn_total"] += 1
-                                await hub.broadcast(payload)
-                                await hub.broadcast({"type":"status","data":hub.compose_status()})
-
-                                # mark section worked (for frontend grey-out indicator)
-                                if sect:
-                                    if sect not in hub.sections_worked:
-                                        hub.sections_worked.add(sect)
-                                        hub.metrics["sections_worked_total"] = len(hub.sections_worked)
-                                        await hub.broadcast({"type":"section_hit","data":sect})
-                                        await hub.broadcast({"type":"sections_worked","data":sorted(hub.sections_worked)})
-
+                                await hub.emit_path(dest, base_meta, TTL_SECONDS, origin_override=copy.deepcopy(hub.origin))
                                 last_emit = now
+                            continue
+
+                        if call:
+                            hub.pending_meta[call_key] = {
+                                "meta": copy.deepcopy(base_meta),
+                                "origin": copy.deepcopy(hub.origin),
+                            }
+                            await _send(writer, f"<CMD><COUNTRYLISTLOOKUP><CALL>{call}</CALL></CMD>")
+
                         continue
 
                     # COUNTRYLISTLOOKUP fallback
@@ -417,11 +647,16 @@ async def n3fjp_client():
                             lat = float(tlat_s); lon = parse_lon_west_positive(tlon_s)
                             if lon is not None:
                                 dest = {"lat": lat, "lon": lon, "grid": maidenhead_from_latlon(lat, lon)}
-                                hub.state["last_event_ts"] = time.time()
-                                hub.metrics["paths_drawn_total"] += 1
-                                payload = {"type":"path","data":{"from": hub.origin, "to": dest, "meta": {"call": call}, "ttl": TTL_SECONDS}}
-                                await hub.broadcast(payload)
-                                await hub.broadcast({"type":"status","data":hub.compose_status()})
+                                meta_info = hub.pending_meta.pop((call or "").upper(), None)
+                                meta_payload = {"call": call}
+                                origin_override = None
+                                if meta_info:
+                                    meta_payload = meta_info.get("meta", meta_payload)
+                                    origin_override = meta_info.get("origin")
+                                country_name = tag(rec, "COUNTRY") or tag(rec, "COUNTRY_NAME")
+                                if country_name and not meta_payload.get("country"):
+                                    meta_payload["country"] = country_name
+                                await hub.emit_path(dest, meta_payload, TTL_SECONDS, origin_override=origin_override)
                         continue
 
         except asyncio.CancelledError:
