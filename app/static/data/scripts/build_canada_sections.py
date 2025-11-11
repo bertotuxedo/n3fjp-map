@@ -5,6 +5,7 @@ import unicodedata
 import re
 import geopandas as gpd
 from shapely.geometry import GeometryCollection
+from shapely.geometry.polygon import orient
 
 # ---------------------------
 # Normalization helpers
@@ -282,9 +283,30 @@ def main():
     out = gdf.dissolve(by="SECTION", as_index=False)
 
     # Some dissolve results may carry GeometryCollections; make valid via buffer(0)
-    out["geometry"] = out["geometry"].apply(
-        lambda geom: GeometryCollection() if geom is None else geom.buffer(0) if not geom.is_valid else geom
-    )
+    def make_valid(geom):
+        if geom is None:
+            return GeometryCollection()
+        if not geom.is_valid:
+            try:
+                geom = geom.buffer(0)
+            except Exception:
+                return GeometryCollection()
+        return geom
+
+    def orient_geom(geom):
+        if geom is None or geom.is_empty:
+            return geom
+        gtype = geom.geom_type
+        try:
+            if gtype == "Polygon":
+                return orient(geom, sign=1.0)
+            if gtype == "MultiPolygon":
+                return type(geom)(orient(part, sign=1.0) for part in geom.geoms)
+        except Exception:
+            return geom
+        return geom
+
+    out["geometry"] = out["geometry"].apply(lambda geom: orient_geom(make_valid(geom)))
 
     # Save
     print(f"✅ Wrote {args.output}")
