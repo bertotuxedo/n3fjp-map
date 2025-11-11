@@ -7,6 +7,7 @@ const api        = document.getElementById('api');
 const originTxt  = document.getElementById('originTxt');
 const lastEvt    = document.getElementById('lastEvt');
 const workedCount= document.getElementById('workedCount');
+const countriesCount = document.getElementById('countriesCount');
 const recentBox  = document.getElementById('recentBox');
 const bandSel    = document.getElementById('bandSel');
 const modeSel    = document.getElementById('modeSel');
@@ -135,6 +136,8 @@ function clearSelectedContact(triggerRender = true){
     map.removeLayer(selectedMapHighlight);
     selectedMapHighlight = null;
   }
+  clearSectionHighlight();
+  clearCountryHighlight();
   setGlobeHighlight(null);
   if (triggerRender) renderRecentList();
 }
@@ -149,6 +152,8 @@ function highlightContact(contact){
     selectedMapHighlight = L.polyline(latlngs, { color:'#ffffff', weight:4, opacity:0.85 }).addTo(map);
     if (selectedMapHighlight.bringToFront) selectedMapHighlight.bringToFront();
   }
+  if (contact?.meta?.section) highlightSection(contact.meta.section);
+  if (contact?.meta?.country) highlightCountry(contact.meta.country);
   setGlobeHighlight(contact);
 }
 
@@ -245,6 +250,7 @@ function setOrigin(o){
 
 // Sections (boundaries + centroids) on map
 const workedSections = new Set();
+const workedCountries = new Set();
 
 const sectionPolygonGroup = L.layerGroup().addTo(map);
 map.createPane('sectionHighlightPane');
@@ -252,6 +258,14 @@ map.getPane('sectionHighlightPane').style.zIndex = 650;
 const sectionHighlightGroup = L.layerGroup().addTo(map);
 let sectionPinsLayer = L.layerGroup().addTo(map);
 let sectionCentroids = {};
+
+const countryPolygonGroup = L.layerGroup().addTo(map);
+map.createPane('countryHighlightPane');
+map.getPane('countryHighlightPane').style.zIndex = 645;
+const countryHighlightGroup = L.layerGroup().addTo(map);
+let countryPinsLayer = L.layerGroup().addTo(map);
+let countryCentroids = {};
+const countryAliasIndex = new Map();
 
 function sectionInfo(code){
   const uc = (code || '').toUpperCase();
@@ -275,6 +289,41 @@ let divisionColorIndex = 0;
 let highlightedSectionCode = null;
 let pendingHighlightCode = null;
 
+function canonicalCountryKey(name){
+  if (!name) return '';
+  return name
+    .toString()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/[^\p{Letter}\p{Number}]+/gu, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+function resolveCountryKey(name){
+  const alias = canonicalCountryKey(name);
+  if (!alias) return '';
+  if (countryCentroids[alias]) return alias;
+  return countryAliasIndex.get(alias) || alias;
+}
+
+function countryInfo(name){
+  const key = resolveCountryKey(name);
+  if (!key) return null;
+  const info = countryCentroids[key];
+  if (!info) return null;
+  return { key, ...info };
+}
+
+function countryName(name){
+  const info = countryInfo(name);
+  return info && info.name ? info.name : (canonicalCountryKey(name) || '');
+}
+
+const countryPolygonRegistry = new Map();
+let highlightedCountryKey = null;
+let pendingCountryHighlight = null;
+
 function colorForDivision(name){
   const key = (name || '').toUpperCase();
   if (!divisionColorMap.has(key)){
@@ -285,8 +334,13 @@ function colorForDivision(name){
   return divisionColorMap.get(key);
 }
 
-function markPinWorked(pin){
+function markSectionPinWorked(pin){
   pin.setStyle({ fillColor: '#bbb', fillOpacity: 0.9, color: '#888' });
+  if (pin.bringToFront) pin.bringToFront();
+}
+
+function markCountryPinWorked(pin){
+  pin.setStyle({ fillColor: '#facc15', fillOpacity: 0.85, color: '#b45309' });
   if (pin.bringToFront) pin.bringToFront();
 }
 
@@ -306,6 +360,82 @@ function applyWorkedStyle(code){
     });
     if (layer.bringToFront) layer.bringToFront();
   });
+}
+
+function applyCountryWorkedStyle(key){
+  if (!key) return;
+  const canon = resolveCountryKey(key);
+  if (!canon) return;
+  const entry = countryPolygonRegistry.get(canon);
+  if (!entry) return;
+  entry.worked = true;
+  entry.layers.forEach(layer => {
+    layer.setStyle({
+      color: '#1e293b',
+      weight: 1.5,
+      opacity: 0.75,
+      fillColor: '#facc15',
+      fillOpacity: 0.25
+    });
+    if (layer.bringToFront) layer.bringToFront();
+  });
+}
+
+function registerCountryPolygon(key, layer){
+  const canon = resolveCountryKey(key);
+  if (!canon) return;
+  let entry = countryPolygonRegistry.get(canon);
+  if (!entry){
+    entry = { layers: [], worked: false };
+    countryPolygonRegistry.set(canon, entry);
+  }
+  entry.layers.push(layer);
+  if (workedCountries.has(canon)) applyCountryWorkedStyle(canon);
+  if (pendingCountryHighlight === canon || highlightedCountryKey === canon) highlightCountry(canon);
+}
+
+function highlightCountry(name){
+  const canon = resolveCountryKey(name);
+  if (!canon){
+    pendingCountryHighlight = null;
+    return;
+  }
+  const entry = countryPolygonRegistry.get(canon);
+  if (!entry){
+    pendingCountryHighlight = canon;
+    highlightedCountryKey = canon;
+    countryHighlightGroup.clearLayers();
+    return;
+  }
+  pendingCountryHighlight = null;
+  highlightedCountryKey = canon;
+  countryHighlightGroup.clearLayers();
+  let drawn = false;
+  entry.layers.forEach(layer => {
+    try {
+      const gj = layer.toGeoJSON();
+      const highlight = L.geoJSON(gj, {
+        interactive: false,
+        pane: 'countryHighlightPane',
+        style: () => ({
+          color: '#facc15',
+          weight: 2.5,
+          opacity: 0.95,
+          fillOpacity: 0
+        })
+      }).addTo(countryHighlightGroup);
+      if (highlight.bringToFront) highlight.bringToFront();
+      drawn = true;
+    } catch {}
+  });
+  if (countryHighlightGroup.bringToFront) countryHighlightGroup.bringToFront();
+  if (!drawn) pendingCountryHighlight = canon;
+}
+
+function clearCountryHighlight(){
+  highlightedCountryKey = null;
+  pendingCountryHighlight = null;
+  countryHighlightGroup.clearLayers();
 }
 
 function registerSectionPolygon(code, layer, color){
@@ -365,12 +495,13 @@ function clearSectionHighlight(){
 
 map.on('click', ()=>{
   clearSectionHighlight();
+  clearCountryHighlight();
   if (selectedContactId !== null) clearSelectedContact();
 });
 
 async function loadSections(){
   try {
-    const res = await fetch('/static/sections.json');
+    const res = await fetch('/static/data/centroids/sections.json');
     if (!res.ok) return;
     sectionCentroids = await res.json();
     Object.entries(sectionCentroids).forEach(([code, pt])=>{
@@ -381,11 +512,138 @@ async function loadSections(){
       pin._sectionCode = code.toUpperCase();
       pin.on('click', (ev)=>{ highlightSection(pin._sectionCode); L.DomEvent.stop(ev); });
       sectionPinsLayer.addLayer(pin);
-      if (workedSections.has(pin._sectionCode)) markPinWorked(pin);
+      if (workedSections.has(pin._sectionCode)) markSectionPinWorked(pin);
     });
   } catch {}
 }
 loadSections();
+
+async function loadCountries(){
+  try {
+    const res = await fetch('/static/data/centroids/countries.geojson');
+    if (!res.ok) return;
+    const geojson = await res.json();
+    countryCentroids = {};
+    countryAliasIndex.clear();
+    countryPinsLayer.clearLayers();
+    const features = Array.isArray(geojson?.features) ? geojson.features : [];
+    features.forEach(feature => {
+      const props = feature?.properties || {};
+      const geom = feature?.geometry || {};
+      if (!geom || geom.type !== 'Point') return;
+      const coords = Array.isArray(geom.coordinates) ? geom.coordinates : [];
+      if (coords.length < 2) return;
+      const lon = Number(coords[0]);
+      const lat = Number(coords[1]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      const primary = props.COUNTRY || props.preferred_term || props.english_short || props.NAME || props.name || '';
+      const iso2 = (props.ISO || props.iso2_code || props.AFF_ISO || '').toString().toUpperCase();
+      const iso3 = (props.iso3_code || '').toString().toUpperCase();
+      const aliases = [primary, props.COUNTRYAFF, props.english_short, props.spanish_short, props.french_short, props.russian_short, props.chinese_short, props.arabic_short, iso2, iso3];
+      const canonicalAliases = aliases.map(canonicalCountryKey).filter(Boolean);
+      const baseKey = canonicalAliases.find(alias => !countryCentroids[alias]) || canonicalAliases[0];
+      if (!baseKey) return;
+      const info = {
+        lat,
+        lon,
+        name: primary || props.english_short || iso2 || iso3 || baseKey,
+        iso2,
+        iso3
+      };
+      if (!countryCentroids[baseKey]){
+        countryCentroids[baseKey] = info;
+      }
+      canonicalAliases.forEach(alias => { if (alias) countryAliasIndex.set(alias, baseKey); });
+      countryAliasIndex.set(baseKey, baseKey);
+      const labelParts = [info.name, info.iso2].filter(Boolean);
+      const marker = L.circleMarker([lat, lon], {
+        radius: 5,
+        color: '#92400e',
+        weight: 1,
+        fillColor: '#fbbf24',
+        fillOpacity: 0.35
+      }).bindTooltip(labelParts.join(' • '), { sticky: true });
+      marker._countryKey = baseKey;
+      marker.on('click', ev => { highlightCountry(baseKey); L.DomEvent.stop(ev); });
+      countryPinsLayer.addLayer(marker);
+      if (workedCountries.has(baseKey)) markCountryPinWorked(marker);
+    });
+    const normalized = new Set();
+    workedCountries.forEach(key => {
+      const canon = resolveCountryKey(key);
+      if (canon) normalized.add(canon);
+    });
+    if (normalized.size){
+      const changed = normalized.size !== workedCountries.size || [...normalized].some(k => !workedCountries.has(k));
+      if (changed){
+        workedCountries.clear();
+        normalized.forEach(k => workedCountries.add(k));
+      }
+    }
+    if (countriesCount) countriesCount.textContent = workedCountries.size.toString();
+  } catch {}
+}
+const loadCountriesPromise = loadCountries();
+
+async function loadCountryPolygons(){
+  try {
+    const res = await fetch('/static/data/boundaries/world-administrative-boundaries-countries.geojson');
+    if (!res.ok) return;
+    const geojson = await res.json();
+    L.geoJSON(geojson, {
+      style: () => ({
+        color: '#1f2937',
+        weight: 0.6,
+        opacity: 0.35,
+        fillColor: '#0f172a',
+        fillOpacity: 0.03
+      }),
+      onEachFeature: (feature, layer) => {
+        const props = feature?.properties || {};
+        const aliasCandidates = [
+          props.COUNTRY,
+          props.preferred_term,
+          props.english_short,
+          props.NAME,
+          props.name,
+          props.country,
+          props.Country,
+          props.COUNTRYAFF,
+          props.iso2_code,
+          props.iso3_code,
+          props.ISO,
+          props.AFF_ISO
+        ];
+        const canonical = aliasCandidates.map(canonicalCountryKey).find(Boolean);
+        if (!canonical) return;
+        let key = resolveCountryKey(canonical);
+        if (!key) {
+          key = canonical;
+          const baseName = props.english_short || props.preferred_term || props.COUNTRY || canonical;
+          const geoPt = props.geo_point_2d;
+          if (geoPt && typeof geoPt.lat === 'number' && typeof geoPt.lon === 'number' && !countryCentroids[key]){
+            countryCentroids[key] = {
+              lat: geoPt.lat,
+              lon: geoPt.lon,
+              name: baseName,
+              iso2: (props.iso2_code || '').toString().toUpperCase(),
+              iso3: (props.iso3_code || '').toString().toUpperCase()
+            };
+          }
+        }
+        if (!key) return;
+        countryAliasIndex.set(canonical, key);
+        layer._countryKey = key;
+        const displayName = countryName(key) || canonical;
+        layer.bindTooltip(displayName, { sticky: true });
+        layer.on('click', ev => { highlightCountry(key); L.DomEvent.stop(ev); });
+        registerCountryPolygon(key, layer);
+        if (workedCountries.has(key)) applyCountryWorkedStyle(key);
+      }
+    }).addTo(countryPolygonGroup);
+  } catch {}
+}
+loadCountriesPromise.finally(()=> loadCountryPolygons());
 
 async function loadSectionPolygons(){
   try {
@@ -435,8 +693,19 @@ function graySection(code){
   if (workedSections.has(uc)) return;
   workedSections.add(uc);
   workedCount.textContent = workedSections.size.toString();
-  sectionPinsLayer.eachLayer(l=>{ if (l._sectionCode===uc) markPinWorked(l); });
+  sectionPinsLayer.eachLayer(l=>{ if (l._sectionCode===uc) markSectionPinWorked(l); });
   applyWorkedStyle(uc);
+}
+
+function grayCountry(name){
+  const info = countryInfo(name) || {};
+  const key = info.key || resolveCountryKey(name);
+  if (!key) return;
+  if (workedCountries.has(key)) return;
+  workedCountries.add(key);
+  if (countriesCount) countriesCount.textContent = workedCountries.size.toString();
+  countryPinsLayer.eachLayer(l => { if (l._countryKey === key) markCountryPinWorked(l); });
+  applyCountryWorkedStyle(key);
 }
 
 // Curved arc via quadratic bezier (for map)
@@ -635,7 +904,16 @@ async function refreshStatus(){
     api.textContent=s.apiver || '—';
     if (s.origin?.lat) setOrigin(s.origin);
     if (s.last_event_ts) lastEvt.textContent=new Date(s.last_event_ts*1000).toLocaleString();
-    if (s.sections_worked){ workedSections.clear(); s.sections_worked.forEach(graySection); }
+    if (s.sections_worked){
+      workedSections.clear();
+      workedCount.textContent = '0';
+      s.sections_worked.forEach(graySection);
+    }
+    if (s.countries_worked){
+      workedCountries.clear();
+      if (countriesCount) countriesCount.textContent = '0';
+      s.countries_worked.forEach(grayCountry);
+    }
     if (s.operators) updateOperators(s.operators);
   } catch {}
 }
@@ -669,12 +947,17 @@ ws.onmessage = (ev)=>{
       bannerText.textContent = `Last logged: ${c} • ${new Date().toLocaleTimeString()}`;
       // section dim
       if (data.meta?.section) graySection(data.meta.section);
+      if (data.meta?.country) grayCountry(data.meta.country);
     } else if (msg.type==='operators'){
       updateOperators(msg.data||[]);
     } else if (msg.type==='section_hit'){
       graySection(msg.data);
     } else if (msg.type==='sections_worked'){
       (msg.data||[]).forEach(graySection);
+    } else if (msg.type==='country_hit'){
+      grayCountry(msg.data);
+    } else if (msg.type==='countries_worked'){
+      (msg.data||[]).forEach(grayCountry);
     }
   } catch {}
 };

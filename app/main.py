@@ -7,6 +7,7 @@ import time
 import re
 import json
 import logging
+import unicodedata
 from typing import Set, Dict, Any, Optional, Deque, Tuple, List
 from collections import deque
 import copy
@@ -231,12 +232,14 @@ class Hub:
         self.pending_meta: Dict[str, Dict[str, Any]] = {}
         self.operators_seen: Set[str] = set()
         self.sections_worked: Set[str] = set()
+        self.countries_worked: Set[str] = set()
         # metrics
         self.metrics = {
             "frames_parsed_total": 0,
             "paths_drawn_total": 0,
             "ws_clients_gauge": 0,
             "sections_worked_total": 0,
+            "countries_worked_total": 0,
         }
 
     async def connect(self, ws: WebSocket):
@@ -250,6 +253,8 @@ class Hub:
             await ws.send_json({"type": "operators", "data": sorted(self.operators_seen)})
         if self.sections_worked:
             await ws.send_json({"type": "sections_worked", "data": sorted(self.sections_worked)})
+        if self.countries_worked:
+            await ws.send_json({"type": "countries_worked", "data": sorted(self.countries_worked)})
 
     def disconnect(self, ws: WebSocket):
         self.clients.discard(ws)
@@ -271,6 +276,7 @@ class Hub:
             "origin": self.origin,
             "operators": sorted(self.operators_seen),
             "sections_worked": sorted(self.sections_worked),
+            "countries_worked": sorted(self.countries_worked),
             "metrics": self.metrics,
             "wfd_mode": WFD_MODE,
             "prefer_section": PREFER_SECTION_ALWAYS,
@@ -355,6 +361,15 @@ class Hub:
                 await self.broadcast({"type": "section_hit", "data": section})
                 await self.broadcast({"type": "sections_worked", "data": sorted(self.sections_worked)})
 
+        country = safe_meta.get("country")
+        if country:
+            key = resolve_country_key(country)
+            if key and key not in self.countries_worked:
+                self.countries_worked.add(key)
+                self.metrics["countries_worked_total"] = len(self.countries_worked)
+                await self.broadcast({"type": "country_hit", "data": key})
+                await self.broadcast({"type": "countries_worked", "data": sorted(self.countries_worked)})
+
         self.recent_paths.append({
             "id": path_id,
             "timestamp": timestamp,
@@ -365,9 +380,89 @@ class Hub:
 
 hub = Hub()
 
-# ---------- Sections (centroids only) ----------
-with open("static/sections.json", "r", encoding="utf-8") as f:
+# ---------- Sections & countries (centroids only) ----------
+with open("static/data/centroids/sections.json", "r", encoding="utf-8") as f:
     SECTION_CENTROIDS: Dict[str, Dict[str, float]] = json.load(f)
+
+
+COUNTRY_CENTROIDS: Dict[str, Dict[str, Any]] = {}
+COUNTRY_ALIAS_INDEX: Dict[str, str] = {}
+
+
+def canonical_country_key(name: Optional[str]) -> Optional[str]:
+    if not name:
+        return None
+    normalized = unicodedata.normalize("NFD", str(name))
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    normalized = re.sub(r"[^0-9A-Za-z]+", " ", normalized)
+    normalized = normalized.strip().upper()
+    return normalized or None
+
+
+def resolve_country_key(name: Optional[str]) -> Optional[str]:
+    key = canonical_country_key(name)
+    if not key:
+        return None
+    if key in COUNTRY_CENTROIDS:
+        return key
+    return COUNTRY_ALIAS_INDEX.get(key, key)
+
+
+try:
+    with open("static/data/centroids/countries.geojson", "r", encoding="utf-8") as f:
+        countries_geo = json.load(f)
+    for feature in countries_geo.get("features", []):
+        props = feature.get("properties") or {}
+        geom = feature.get("geometry") or {}
+        if geom.get("type") != "Point":
+            continue
+        coords = geom.get("coordinates") or []
+        if len(coords) < 2:
+            continue
+        try:
+            lon = float(coords[0])
+            lat = float(coords[1])
+        except (TypeError, ValueError):
+            continue
+        primary = props.get("COUNTRY") or props.get("preferred_term") or props.get("english_short") or props.get("NAME") or ""
+        iso2 = str(props.get("ISO") or props.get("iso2_code") or props.get("AFF_ISO") or "").upper()
+        iso3 = str(props.get("iso3_code") or "").upper()
+        aliases_raw = [
+            primary,
+            props.get("COUNTRYAFF"),
+            props.get("english_short"),
+            props.get("spanish_short"),
+            props.get("french_short"),
+            props.get("russian_short"),
+            props.get("chinese_short"),
+            props.get("arabic_short"),
+            iso2,
+            iso3,
+        ]
+        alias_keys: List[str] = []
+        for alias in aliases_raw:
+            key = canonical_country_key(alias)
+            if key and key not in alias_keys:
+                alias_keys.append(key)
+        if not alias_keys:
+            continue
+        base_key = next((k for k in alias_keys if k not in COUNTRY_CENTROIDS), alias_keys[0])
+        info = {
+            "lat": lat,
+            "lon": lon,
+            "name": primary or props.get("english_short") or iso2 or iso3 or base_key,
+            "iso2": iso2,
+            "iso3": iso3,
+        }
+        if base_key not in COUNTRY_CENTROIDS:
+            COUNTRY_CENTROIDS[base_key] = info
+        for alias_key in alias_keys:
+            COUNTRY_ALIAS_INDEX[alias_key] = base_key
+        COUNTRY_ALIAS_INDEX[base_key] = base_key
+except FileNotFoundError:
+    pass
+except Exception as exc:
+    logging.warning(f"Failed to load country centroids: {exc}")
 
 # ---------- Helpers ----------
 def tag(text: str, name: str) -> Optional[str]:
@@ -460,6 +555,9 @@ async def metrics():
         "# HELP n3fjp_sections_worked_total Distinct sections worked",
         "# TYPE n3fjp_sections_worked_total gauge",
         f"n3fjp_sections_worked_total {m['sections_worked_total']}",
+        "# HELP n3fjp_countries_worked_total Distinct countries worked",
+        "# TYPE n3fjp_countries_worked_total gauge",
+        f"n3fjp_countries_worked_total {m['countries_worked_total']}",
     ]
     return PlainTextResponse("\n".join(lines), media_type="text/plain; version=0.0.4")
 
