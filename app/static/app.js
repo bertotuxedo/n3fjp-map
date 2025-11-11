@@ -710,7 +710,14 @@ function grayCountry(name){
 
 // Curved arc via quadratic bezier (for map)
 function arcPoints(from, to, bulge=0.15, steps=160){
-  const lat1=from.lat, lon1=from.lon, lat2=to.lat, lon2=to.lon;
+  const lat1=Number(from?.lat);
+  const lon1=Number(from?.lon);
+  const lat2=Number(to?.lat);
+  const lon2=Number(to?.lon);
+  if (![lat1, lon1, lat2, lon2].every(Number.isFinite)) {
+    // If we can't parse real coordinates, skip drawing.
+    return [];
+  }
   const mx=(lat1+lat2)/2, my=(lon1+lon2)/2;
   const dx=lat2-lat1, dy=lon2-lon1, len=Math.hypot(dx,dy)||1e-6;
   const nx=-(dy/len), ny=(dx/len);
