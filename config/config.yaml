@@ -5,8 +5,13 @@ N3FJP_PORT: 1100
 # Behavior
 WFD_MODE: true                 # prefer section centroids when available
 PREFER_SECTION_ALWAYS: false   # force all to section centroids if true
-TTL_SECONDS: 60                # how long a path persists (s)
+TTL_SECONDS: 600               # how long a path persists (s)
 HEARTBEAT_SECONDS: 5           # how often to ping APIVER for liveness
+
+# QRZ lookup (optional; can also be set via environment variables)
+QRZ_USERNAME: ""
+QRZ_PASSWORD: ""
+QRZ_AGENT: "n3fjp-map"
 
 # Optional server-side filters (comma-separated)
 # Example: "20,40,80"

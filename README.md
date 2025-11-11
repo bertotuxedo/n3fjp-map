@@ -7,7 +7,8 @@ N3FJP API to a Web Browser Man via Docker Compose
 -- Globe (globe.gl) (3D): moving dashed arcs like the reference demo.
 -- Filter by band / mode / operator (K2FTS/1, /2, …).
 -- Section “hit” greying as you work more ARRL sections.
--- Status card, pretty “recent frames”, and a live banner (“last logged …”).
+-- Automatic QRZ lookup for DX stations to improve destination grids.
+-- Status card, interactive recent contacts list (click to replay arcs), and a live banner (“last logged …”).
 -- Forward-looking: multi-op, multi-site friendly; works with any N3FJP suite app exposing the TCP API (API ≥ 2.2).
 
   Quickstart (Docker)
@@ -38,7 +39,7 @@ n3fjp:
   port: 1100              # N3FJP TCP API port (default 1100)
 
 visual:
-  ttl_seconds: 60         # how long each path stays on screen
+  ttl_seconds: 600        # how long each path stays on screen
   globe_enabled: true     # enable/disable the 3D globe view
   map_bulge: 0.15         # curvature factor for 2D arcs (0.1–0.2 looks nice)
 
@@ -67,10 +68,17 @@ services:
     environment:
       N3FJP_HOST: 192.168.1.126
       N3FJP_PORT: 1100
-      TTL_SECONDS: 60
+      TTL_SECONDS: 600
+      QRZ_USERNAME: your_qrz_username
+      QRZ_PASSWORD: your_qrz_password
+      QRZ_AGENT: n3fjp-map
+
     volumes:
       - ./config:/app/config:ro
       - ./app/static:/app/static:ro   # optional live-edit of UI assets
+
+You can also copy `.env.example` to `.env` and fill in QRZ credentials locally.
+
 
 How it works (high level)
 
@@ -118,7 +126,7 @@ GET / – Web UI
 
 GET /status – JSON status snapshot
 
-GET /recent – Most recent raw frames (server-side buffer)
+GET /recent – Most recent contact summaries (server-side buffer)
 
 GET /static/* – UI assets
 
