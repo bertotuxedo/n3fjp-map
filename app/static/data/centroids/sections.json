@@ -85,6 +85,5 @@
   "SK":  {"lat": 53.0,  "lon": -106.0,"name": "Saskatchewan (RAC)"},
   "TER": {"lat": 64.9, "lon": -110.2, "name": "Territories (RAC)"},
 
-  "MX": {"lat": 23.8,  "lon": -102.4,  "name": "Mexico"},
-  "DX":  {"lat": 20.0,  "lon": 0.0,   "name": "DX (Outside US/Canada)"}
+  "MX": {"lat": 23.8,  "lon": -102.4,  "name": "Mexico"}
 }
