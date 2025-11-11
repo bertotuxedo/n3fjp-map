@@ -13,5 +13,7 @@
   "Rocky Mountain": "/static/data/out_divisions/arrl_division_Rocky_Mountain.geojson",
   "Southeastern": "/static/data/out_divisions/arrl_division_Southeastern.geojson",
   "Southwestern": "/static/data/out_divisions/arrl_division_Southwestern.geojson",
-  "West Gulf": "/static/data/out_divisions/arrl_division_West_Gulf.geojson"
+  "West Gulf": "/static/data/out_divisions/arrl_division_West_Gulf.geojson",
+  "Canada": "/static/data/canada_sections_merged.geojson",
+  "Mexico": "/static/data/origin_geojson/mexico.geojson"
 }
