@@ -1,4 +1,5 @@
 # n3fjp-map
+# WINTER FIELD DAY LOG - TESTING PHASE
 
 Real-time map and globe visualization for stations logging contacts with the N3FJP suite. The service listens to the N3FJP TCP API, enriches contacts with optional QRZ.com lookups, and broadcasts live contact arcs to a web UI for operators and viewers.
 
