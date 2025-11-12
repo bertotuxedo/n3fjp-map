@@ -256,14 +256,14 @@ const sectionPolygonGroup = L.layerGroup().addTo(map);
 map.createPane('sectionHighlightPane');
 map.getPane('sectionHighlightPane').style.zIndex = 650;
 const sectionHighlightGroup = L.layerGroup().addTo(map);
-let sectionPinsLayer = L.layerGroup().addTo(map);
+let sectionPinsLayer = L.layerGroup();
 let sectionCentroids = {};
 
 const countryPolygonGroup = L.layerGroup().addTo(map);
 map.createPane('countryHighlightPane');
 map.getPane('countryHighlightPane').style.zIndex = 645;
 const countryHighlightGroup = L.layerGroup().addTo(map);
-let countryPinsLayer = L.layerGroup().addTo(map);
+let countryPinsLayer = L.layerGroup();
 let countryCentroids = {};
 const countryAliasIndex = new Map();
 
