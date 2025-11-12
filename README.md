@@ -2,6 +2,10 @@
 
 Real-time map and globe visualization for stations logging contacts with the N3FJP suite. The service listens to the N3FJP TCP API, enriches contacts with optional QRZ.com lookups, and broadcasts live contact arcs to a web UI for operators and viewers.
 
+<img width="1914" height="904" alt="image" src="https://github.com/user-attachments/assets/f8331f58-db75-4bc0-a5bd-c900584760ae" />
+<img width="1895" height="880" alt="image" src="https://github.com/user-attachments/assets/ed23cddb-0356-4142-826b-9713bcfc49e4" />
+
+
 ## Features
 - **Live contact visualization** on a Leaflet map (2D) and globe.gl (3D) with animated arcs.
 - **Band and mode styling** (color by band, solid/dashed patterns by mode including "K2FTS" Morse pattern for CW).
