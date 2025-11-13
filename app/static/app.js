@@ -44,6 +44,9 @@ const mapSegments = new Map();
 let selectedContactId = null;
 let selectedMapHighlight = null;
 let globeHighlight = null;
+const stationOrigins = new Map();
+const stationOriginMarkers = new Map();
+let primaryStationName = 'Primary Station';
 
 function passFilters(meta){
   if (bandSel && bandSel.value && (meta.band||"") !== bandSel.value) return false;
@@ -68,9 +71,94 @@ function formatLocation(point, fallback=''){
   return latlon || fallback;
 }
 
+function canonicalStationKey(name){
+  return (name || '').toString().trim().toUpperCase();
+}
+
+function normalizeStationOriginEntry(entry){
+  if (!entry) return null;
+  const lat = Number(entry.lat);
+  const lon = Number(entry.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  const name = (entry.name || entry.station || primaryStationName || 'Station').toString().trim() || primaryStationName;
+  const grid = entry.grid || entry.maidenhead || '';
+  const key = canonicalStationKey(name || `${lat.toFixed(2)},${lon.toFixed(2)}`);
+  return { key, name, lat, lon, grid };
+}
+
+function updateOriginSummary(){
+  if (!originTxt) return;
+  if (!stationOrigins.size){
+    originTxt.textContent = '—';
+    return;
+  }
+  const parts = Array.from(stationOrigins.values())
+    .sort((a,b)=> a.name.localeCompare(b.name))
+    .map(info => {
+      const loc = info.grid || formatLatLon(info);
+      return loc ? `${info.name} (${loc})` : info.name;
+    });
+  originTxt.textContent = parts.join(' • ');
+}
+
+function upsertStationMarker(info){
+  if (!info || !Number.isFinite(info.lat) || !Number.isFinite(info.lon)) return;
+  let marker = stationOriginMarkers.get(info.key);
+  const tooltip = `${info.name}${info.grid ? ' • ' + info.grid : ''}`;
+  if (!marker){
+    marker = L.circleMarker([info.lat, info.lon], {
+      radius: 6,
+      color: '#0ea5e9',
+      weight: 2,
+      fillColor: '#38bdf8',
+      fillOpacity: 0.9,
+    }).addTo(map);
+    marker.bindTooltip(tooltip, { direction:'top' });
+    stationOriginMarkers.set(info.key, marker);
+  } else {
+    marker.setLatLng([info.lat, info.lon]);
+    const tt = marker.getTooltip && marker.getTooltip();
+    if (tt) tt.setContent(tooltip);
+  }
+}
+
+function registerStationOrigin(entry){
+  const info = normalizeStationOriginEntry(entry);
+  if (!info) return;
+  stationOrigins.set(info.key, info);
+  upsertStationMarker(info);
+  updateOriginSummary();
+}
+
+function applyStationOriginList(list){
+  const seen = new Set();
+  (list || []).forEach(entry => {
+    const info = normalizeStationOriginEntry(entry);
+    if (!info) return;
+    seen.add(info.key);
+    stationOrigins.set(info.key, info);
+    upsertStationMarker(info);
+  });
+  Array.from(stationOrigins.keys()).forEach(key => {
+    if (seen.has(key)) return;
+    stationOrigins.delete(key);
+    const marker = stationOriginMarkers.get(key);
+    if (marker){
+      map.removeLayer(marker);
+      stationOriginMarkers.delete(key);
+    }
+  });
+  updateOriginSummary();
+}
+
 function formatFromContact(contact){
   if (!contact) return 'Origin';
-  return contact.meta?.operator || formatLocation(contact.from, contact.from?.grid ? contact.from.grid : 'Origin');
+  const station = (contact.meta?.station || '').toString().trim();
+  const operator = (contact.meta?.operator || '').toString().trim();
+  if (station && operator && station.toUpperCase() !== operator.toUpperCase()) return `${station} (${operator})`;
+  if (station) return station;
+  if (operator) return operator;
+  return formatLocation(contact.from, contact.from?.grid ? contact.from.grid : 'Origin');
 }
 
 function formatToContact(contact){
@@ -240,12 +328,11 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 12, attribution: "&copy; OpenStreetMap"
 }).addTo(map);
 
-let originMarker;
 function setOrigin(o){
-  if (o.lat == null || o.lon == null) return;
-  if (!originMarker) originMarker = L.marker([o.lat,o.lon], { title:`Origin ${o.grid||''}`}).addTo(map);
-  else originMarker.setLatLng([o.lat,o.lon]);
-  originTxt.textContent = `${o.grid||''} (${o.lat.toFixed(3)}, ${o.lon.toFixed(3)})`;
+  if (!o || o.lat == null || o.lon == null) return;
+  const payload = { ...o };
+  if (!payload.name) payload.name = primaryStationName;
+  registerStationOrigin(payload);
 }
 
 // Sections (boundaries + centroids) on map
@@ -909,7 +996,12 @@ async function refreshStatus(){
     else { connPill.textContent='Disconnected'; connPill.className='pill bad'; }
     prog.textContent=s.program || '—';
     api.textContent=s.apiver || '—';
-    if (s.origin?.lat) setOrigin(s.origin);
+    if (typeof s.primary_station_name === 'string' && s.primary_station_name.trim()) primaryStationName = s.primary_station_name;
+    if (Array.isArray(s.station_origins)){
+      applyStationOriginList(s.station_origins);
+    } else if (s.origin?.lat != null) {
+      setOrigin(s.origin);
+    }
     if (s.last_event_ts) lastEvt.textContent=new Date(s.last_event_ts*1000).toLocaleString();
     if (s.sections_worked){
       workedSections.clear();
@@ -938,8 +1030,14 @@ ws.onmessage = (ev)=>{
       if (s.program) prog.textContent=s.program;
       if (s.apiver)  api.textContent=s.apiver;
       if (s.last_event_ts) lastEvt.textContent=new Date(s.last_event_ts*1000).toLocaleString();
+      if (typeof s.primary_station_name === 'string' && s.primary_station_name.trim()) primaryStationName = s.primary_station_name;
+      if (Array.isArray(s.station_origins)) applyStationOriginList(s.station_origins);
     } else if (msg.type==='origin'){
       setOrigin(msg.data);
+    } else if (msg.type==='station_origins'){
+      applyStationOriginList(msg.data || []);
+    } else if (msg.type==='station_origin'){
+      registerStationOrigin(msg.data);
     } else if (msg.type==='path'){
       const data = msg.data || {};
       // map
