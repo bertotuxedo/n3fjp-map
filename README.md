@@ -15,6 +15,7 @@ Real-time map and globe visualization for stations logging contacts with the N3F
 - **Status dashboard** showing API heartbeat, origin fix, and recent contacts.
 - **Optional QRZ.com integration** to improve DX station grid / location data.
 - **Multi-station awareness** so every networked logger can originate contacts from its own grid square or lat/lon.
+- **Dual-port ingest** that merges the 1100 API feed with the 1000 status/chat feed so every connected station is represented.
 
 ## Prerequisites
 - Docker and Docker Compose (for containerized deployment), or Python 3.10+ for a local run.
@@ -50,7 +51,11 @@ The primary configuration lives in `config/config.yaml` (mounted read-only by Do
 ```yaml
 # N3FJP TCP server location
 N3FJP_HOST: "192.168.1.123"
-N3FJP_PORT: 1100
+N3FJP_PORT: 1100            # legacy alias for the API feed (port 1100)
+N3FJP_API_PORT: 1100        # optional explicit override for the API feed
+N3FJP_STATUS_PORT: 1000     # TCP status / chat feed (port 1000)
+ENABLE_API_PORT: true       # disable if you only want status data
+ENABLE_STATUS_PORT: true    # disable if you only want API data
 
 # Behavior
 WFD_MODE: true                 # prefer ARRL section centroids when available
@@ -109,10 +114,10 @@ For local overrides without editing the compose file, create a `.env` file and s
 - `WS /ws` – WebSocket stream used by the UI for status/origin/path updates.
 
 ## How it works
-1. On startup the FastAPI service connects to the N3FJP TCP API (`N3FJP_HOST:N3FJP_PORT`).
-2. It sends `<APIVER>`, `<PROGRAM>`, `<OPINFO>`, and `<SETUPDATESTATE>TRUE</SETUPDATESTATE>` to subscribe to live updates.
-3. As contacts are logged (`<ENTEREVENT>`), the server determines origin/destination grid squares or coordinates, enriches them via QRZ (when configured), and pushes path events to the browser over WebSocket.
-4. The browser animates the arcs, updates filters, and tracks section status in real time.
+1. On startup the FastAPI service connects to both the N3FJP TCP API (`N3FJP_API_PORT`, default 1100) and the TCP status/chat feed (`N3FJP_STATUS_PORT`, default 1000).
+2. The API connection sends `<APIVER>`, `<PROGRAM>`, `<OPINFO>`, and `<SETUPDATESTATE>TRUE</SETUPDATESTATE>` to subscribe to live contact updates while the status connection streams the list of networked stations, their bands, modes, and chat/status text.
+3. As contacts are logged (`<ENTEREVENT>`), the server determines origin/destination grid squares or coordinates, enriches them via QRZ (when configured), merges station metadata from both feeds, and pushes path events to the browser over WebSocket.
+4. The browser animates the arcs, updates filters, tracks section status in real time, and refreshes station markers/tooltips whenever new status data arrives.
 
 ## Preparing N3FJP
 On the Windows host running your N3FJP logger:
@@ -124,7 +129,7 @@ On the Windows host running your N3FJP logger:
 If QRZ credentials are supplied, the app performs lookups for non-local stations to supplement grid and location data. Sessions are cached and refreshed automatically; missing or invalid credentials simply skip QRZ lookups.
 
 ## Troubleshooting tips
-- Ensure the Docker host can reach the Windows machine on the TCP port (default `1100`).
+- Ensure the Docker host can reach the Windows machine on both TCP ports (API `1100` and status/chat `1000`) or disable the one you aren't using.
 - If no contacts appear, verify the N3FJP API is enabled and the API version is ≥ 2.2.
 - Review `docker compose logs` for connection or QRZ errors.
 

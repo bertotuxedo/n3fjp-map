@@ -83,7 +83,35 @@ function normalizeStationOriginEntry(entry){
   const name = (entry.name || entry.station || primaryStationName || 'Station').toString().trim() || primaryStationName;
   const grid = entry.grid || entry.maidenhead || '';
   const key = canonicalStationKey(name || `${lat.toFixed(2)},${lon.toFixed(2)}`);
-  return { key, name, lat, lon, grid };
+  const band = entry.band ? entry.band.toString().trim() : '';
+  const mode = entry.mode ? entry.mode.toString().toUpperCase() : '';
+  const status = entry.status ? entry.status.toString().trim() : '';
+  const call = entry.call ? entry.call.toString().trim() : '';
+  const operator = entry.operator ? entry.operator.toString().trim() : '';
+  const section = entry.section ? entry.section.toString().trim() : '';
+  const country = entry.country ? entry.country.toString().trim() : '';
+  const message = entry.message ? entry.message.toString().trim() : '';
+  const sources = Array.isArray(entry.sources)
+    ? entry.sources.map(src => src.toString())
+    : (entry.sources ? [entry.sources.toString()] : []);
+  const lastSeen = Number(entry.last_seen);
+  return {
+    key,
+    name,
+    lat,
+    lon,
+    grid,
+    band,
+    mode,
+    status,
+    call,
+    operator,
+    section,
+    country,
+    message,
+    sources,
+    last_seen: Number.isFinite(lastSeen) ? lastSeen : null,
+  };
 }
 
 function updateOriginSummary(){
@@ -95,8 +123,14 @@ function updateOriginSummary(){
   const parts = Array.from(stationOrigins.values())
     .sort((a,b)=> a.name.localeCompare(b.name))
     .map(info => {
+      const detail = [];
       const loc = info.grid || formatLatLon(info);
-      return loc ? `${info.name} (${loc})` : info.name;
+      if (loc) detail.push(loc);
+      if (info.band) detail.push(`${info.band}m`);
+      if (info.mode) detail.push(info.mode.toUpperCase());
+      if (info.status) detail.push(info.status);
+      if (!detail.length) return info.name;
+      return `${info.name} (${detail.join(' • ')})`;
     });
   originTxt.textContent = parts.join(' • ');
 }
@@ -104,7 +138,18 @@ function updateOriginSummary(){
 function upsertStationMarker(info){
   if (!info || !Number.isFinite(info.lat) || !Number.isFinite(info.lon)) return;
   let marker = stationOriginMarkers.get(info.key);
-  const tooltip = `${info.name}${info.grid ? ' • ' + info.grid : ''}`;
+  const details = [];
+  if (info.grid) details.push(info.grid);
+  else {
+    const loc = formatLatLon(info);
+    if (loc) details.push(loc);
+  }
+  if (info.band) details.push(`${info.band}m`);
+  if (info.mode) details.push(info.mode.toUpperCase());
+  if (info.status) details.push(info.status);
+  if (info.operator) details.push(info.operator);
+  if (info.call) details.push(info.call);
+  const tooltip = details.length ? `${info.name} • ${details.join(' • ')}` : info.name;
   if (!marker){
     marker = L.circleMarker([info.lat, info.lon], {
       radius: 6,
