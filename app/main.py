@@ -73,6 +73,11 @@ def cfg_get(name: str, default: Any):
             return int(val)
         except Exception:
             return default
+    if isinstance(default, (dict, list)):
+        try:
+            return json.loads(val)
+        except Exception:
+            return default
     return val
 
 # ---------- Logging ----------
@@ -90,9 +95,21 @@ MODE_FILTER = set([m.strip().upper() for m in str(cfg_get("MODE_FILTER", "")).sp
 
 HEARTBEAT_SECONDS = max(3, cfg_get("HEARTBEAT_SECONDS", 5))
 
+PRIMARY_STATION_NAME = cfg_get("PRIMARY_STATION_NAME", "Primary Station")
+STATION_LOCATIONS_RAW = cfg_get("STATION_LOCATIONS", {})
+
 QRZ_USERNAME = cfg_get("QRZ_USERNAME", "")
 QRZ_PASSWORD = cfg_get("QRZ_PASSWORD", "")
 QRZ_AGENT = cfg_get("QRZ_AGENT", "n3fjp-map") or "n3fjp-map"
+
+
+def canonical_station_key(name: Optional[str]) -> Optional[str]:
+    if name is None:
+        return None
+    cleaned = re.sub(r"\s+", " ", str(name)).strip()
+    if not cleaned:
+        return None
+    return cleaned.upper()
 
 
 class QRZClient:
@@ -212,9 +229,14 @@ async def health():
 
 # ---------- Hub (WS fanout + state) ----------
 class Hub:
-    def __init__(self):
+    def __init__(
+        self,
+        initial_station_origins: Optional[Dict[str, Dict[str, Any]]] = None,
+        primary_station_name: Optional[str] = None,
+    ):
         self.clients: Set[WebSocket] = set()
         self.origin = {"lat": None, "lon": None, "grid": None}
+        self.primary_station_name = (primary_station_name or "Primary Station").strip() or "Primary Station"
         self.state = {
             "connected": False,
             "last_connect_ts": None,
@@ -233,6 +255,7 @@ class Hub:
         self.operators_seen: Set[str] = set()
         self.sections_worked: Set[str] = set()
         self.countries_worked: Set[str] = set()
+        self.station_origins: Dict[str, Dict[str, Any]] = {}
         # metrics
         self.metrics = {
             "frames_parsed_total": 0,
@@ -241,6 +264,7 @@ class Hub:
             "sections_worked_total": 0,
             "countries_worked_total": 0,
         }
+        self._preload_station_origins(initial_station_origins or {})
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
@@ -248,7 +272,9 @@ class Hub:
         self.metrics["ws_clients_gauge"] = len(self.clients)
         await ws.send_json({"type": "status", "data": self.compose_status()})
         if self.origin["lat"] is not None:
-            await ws.send_json({"type": "origin", "data": self.origin})
+            await ws.send_json({"type": "origin", "data": self.origin_payload()})
+        if self.station_origins:
+            await ws.send_json({"type": "station_origins", "data": self.station_origin_entries()})
         if self.operators_seen:
             await ws.send_json({"type": "operators", "data": sorted(self.operators_seen)})
         if self.sections_worked:
@@ -274,6 +300,8 @@ class Hub:
         return {
             **self.state,
             "origin": self.origin,
+            "primary_station_name": self.primary_station_name,
+            "station_origins": self.station_origin_entries(),
             "operators": sorted(self.operators_seen),
             "sections_worked": sorted(self.sections_worked),
             "countries_worked": sorted(self.countries_worked),
@@ -378,7 +406,89 @@ class Hub:
             "to": to,
         })
 
-hub = Hub()
+    def origin_payload(self) -> Dict[str, Any]:
+        payload = copy.deepcopy(self.origin)
+        payload["name"] = self.primary_station_name
+        return payload
+
+    def station_origin_entries(self) -> List[Dict[str, Any]]:
+        entries = [copy.deepcopy(v) for v in self.station_origins.values()]
+        entries.sort(key=lambda item: (item.get("name") or "").upper())
+        return entries
+
+    def _preload_station_origins(self, initial: Dict[str, Dict[str, Any]]):
+        for key, entry in initial.items():
+            if not entry:
+                continue
+            safe = self._safe_station_origin(entry)
+            if not safe:
+                continue
+            canon = canonical_station_key(entry.get("name") or key)
+            if not canon:
+                continue
+            self.station_origins[canon] = safe
+        prim_key = canonical_station_key(self.primary_station_name)
+        if prim_key and self.origin["lat"] is None:
+            entry = self.station_origins.get(prim_key)
+            if entry:
+                self.origin = {k: entry.get(k) for k in ("lat", "lon", "grid")}
+
+    def _safe_station_origin(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not data:
+            return None
+        lat = data.get("lat")
+        lon = data.get("lon")
+        if lat is None or lon is None:
+            return None
+        try:
+            lat_f = float(lat)
+            lon_f = float(lon)
+        except Exception:
+            return None
+        payload = {"lat": lat_f, "lon": lon_f}
+        grid = data.get("grid") or data.get("maidenhead")
+        if grid:
+            payload["grid"] = str(grid).upper()
+        else:
+            try:
+                payload["grid"] = maidenhead_from_latlon(lat_f, lon_f)
+            except Exception:
+                payload["grid"] = None
+        name = data.get("name") or data.get("station")
+        if name:
+            payload["name"] = str(name)
+        return payload
+
+    async def set_station_origin(self, name: Optional[str], origin: Optional[Dict[str, Any]]):
+        if not name or not origin:
+            return
+        safe = self._safe_station_origin({"name": name, **origin})
+        if not safe:
+            return
+        canon = canonical_station_key(name)
+        if not canon:
+            return
+        prev = self.station_origins.get(canon)
+        if prev and prev.get("lat") == safe.get("lat") and prev.get("lon") == safe.get("lon") and prev.get("grid") == safe.get("grid"):
+            return
+        self.station_origins[canon] = safe
+        if canonical_station_key(self.primary_station_name) == canon:
+            self.origin = {k: safe.get(k) for k in ("lat", "lon", "grid")}
+            await self.broadcast({"type": "origin", "data": self.origin_payload()})
+        await self.broadcast({"type": "station_origin", "data": safe})
+        await self.broadcast({"type": "status", "data": self.compose_status()})
+
+    def get_station_origin(self, name: Optional[str]) -> Optional[Dict[str, Any]]:
+        target = None
+        if name:
+            canon = canonical_station_key(name)
+            if canon:
+                target = self.station_origins.get(canon)
+        if not target and self.origin.get("lat") is not None:
+            target = {**self.origin, "name": self.primary_station_name}
+        if not target:
+            return None
+        return {k: target.get(k) for k in ("lat", "lon", "grid")}
 
 # ---------- Sections & countries (centroids only) ----------
 with open("static/data/centroids/sections.json", "r", encoding="utf-8") as f:
@@ -495,6 +605,31 @@ def first_tag(text: str, *names: str) -> Optional[str]:
             return v
     return None
 
+
+STATION_NAME_TAGS = (
+    "STATIONNAME",
+    "THISSTATIONNAME",
+    "STATION",
+    "STATIONID",
+    "STATION_ID",
+    "STATIONCALL",
+    "CLIENTSTATION",
+    "CLIENTNAME",
+    "COMPUTERNAME",
+    "PCNAME",
+    "NETWORKSTATION",
+)
+
+
+def extract_station_name(text: str) -> Optional[str]:
+    for key in STATION_NAME_TAGS:
+        value = tag(text, key)
+        if value:
+            cleaned = value.strip()
+            if cleaned:
+                return cleaned
+    return None
+
 def parse_lon_west_positive(s: Optional[str]) -> Optional[float]:
     if s is None or s == "":
         return None
@@ -547,6 +682,76 @@ def parse_bool(value: Optional[str]) -> Optional[bool]:
 def section_to_latlon(section: Optional[str]) -> Optional[Dict[str, float]]:
     if not section: return None
     return SECTION_CENTROIDS.get(section.strip().upper())
+
+
+def _float_or_none(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _station_origin_from_spec(spec: Any) -> Optional[Dict[str, Any]]:
+    if spec is None:
+        return None
+    if isinstance(spec, str):
+        text = spec.strip()
+        if not text:
+            return None
+        if re.fullmatch(r"[A-Za-z]{2}\d{2}[A-Za-z]{0,2}", text):
+            coords = latlon_from_maidenhead(text)
+            if coords:
+                coords["grid"] = text.upper()
+                return coords
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return None
+        return _station_origin_from_spec(parsed)
+    if isinstance(spec, dict):
+        lat_val = spec.get("lat") if spec.get("lat") is not None else spec.get("latitude")
+        lon_val = spec.get("lon") if spec.get("lon") is not None else spec.get("longitude")
+        lat = _float_or_none(lat_val)
+        lon = _float_or_none(lon_val)
+        grid = spec.get("grid") or spec.get("maidenhead")
+        if lat is not None and lon is not None:
+            dest = {"lat": lat, "lon": lon}
+            if grid:
+                dest["grid"] = str(grid).upper()
+            else:
+                try:
+                    dest["grid"] = maidenhead_from_latlon(lat, lon)
+                except Exception:
+                    dest["grid"] = None
+            return dest
+        if grid:
+            coords = latlon_from_maidenhead(str(grid))
+            if coords:
+                coords["grid"] = str(grid).upper()
+                return coords
+    return None
+
+
+def build_station_origin_map(raw: Any) -> Dict[str, Dict[str, Any]]:
+    result: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return result
+    for name, spec in raw.items():
+        key = canonical_station_key(name)
+        if not key:
+            continue
+        entry = _station_origin_from_spec(spec)
+        if not entry:
+            continue
+        entry["name"] = str(name)
+        result[key] = entry
+    return result
+
+
+STATION_PRESETS = build_station_origin_map(STATION_LOCATIONS_RAW)
+hub = Hub(initial_station_origins=STATION_PRESETS, primary_station_name=PRIMARY_STATION_NAME)
 
 # ---------- Status endpoints ----------
 @app.get("/status")
@@ -679,10 +884,17 @@ async def n3fjp_client():
                             if lon is not None:
                                 origin = {"lat": lat, "lon": lon}
                                 origin["grid"] = maidenhead_from_latlon(lat, lon)
+                        station_name = extract_station_name(rec)
+                        if station_name:
+                            hub.primary_station_name = station_name
                         if origin:
-                            hub.origin = origin
-                            await hub.broadcast({"type":"origin","data":hub.origin})
-                            await hub.broadcast({"type":"status","data":hub.compose_status()})
+                            target_station = station_name or hub.primary_station_name
+                            if target_station:
+                                await hub.set_station_origin(target_station, origin)
+                            else:
+                                hub.origin = origin
+                                await hub.broadcast({"type": "origin", "data": hub.origin_payload()})
+                                await hub.broadcast({"type": "status", "data": hub.compose_status()})
                         continue
 
                     # Draw ONLY on ENTEREVENT (submit)
@@ -695,6 +907,7 @@ async def n3fjp_client():
                         sect = (first_tag(rec, "SECTION", "ARRL_SECT") or "").upper()
                         oper = tag(rec, "OPERATOR") or tag(rec, "MYCALL") or ""
                         country = tag(rec, "COUNTRY") or ""
+                        station_name = extract_station_name(rec)
 
                         # track operators seen
                         if oper:
@@ -713,9 +926,15 @@ async def n3fjp_client():
                             "section": sect,
                             "operator": oper,
                         }
+                        if station_name:
+                            base_meta["station"] = station_name
                         if country:
                             base_meta["country"] = country
                         call_key = (call or "").upper()
+                        station_origin = hub.get_station_origin(station_name)
+                        origin_snapshot = copy.deepcopy(station_origin) if station_origin else None
+                        if origin_snapshot is None and hub.origin.get("lat") is not None:
+                            origin_snapshot = copy.deepcopy(hub.origin)
 
                         if (WFD_MODE or PREFER_SECTION_ALWAYS) and sect:
                             sec = section_to_latlon(sect)
@@ -753,14 +972,14 @@ async def n3fjp_client():
                             hub.pending_meta.pop(call_key, None)
                             now = time.time()
                             if now - last_emit > 0.01:
-                                await hub.emit_path(dest, base_meta, TTL_SECONDS, origin_override=copy.deepcopy(hub.origin))
+                                await hub.emit_path(dest, base_meta, TTL_SECONDS, origin_override=copy.deepcopy(origin_snapshot) if origin_snapshot else None)
                                 last_emit = now
                             continue
 
                         if call:
                             hub.pending_meta[call_key] = {
                                 "meta": copy.deepcopy(base_meta),
-                                "origin": copy.deepcopy(hub.origin),
+                                "origin": copy.deepcopy(origin_snapshot) if origin_snapshot else copy.deepcopy(hub.origin),
                             }
                             await _send(writer, f"<CMD><COUNTRYLISTLOOKUP><CALL>{call}</CALL></CMD>")
 

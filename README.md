@@ -14,6 +14,7 @@ Real-time map and globe visualization for stations logging contacts with the N3F
 - **ARRL section tracking** with automatic greying of worked sections.
 - **Status dashboard** showing API heartbeat, origin fix, and recent contacts.
 - **Optional QRZ.com integration** to improve DX station grid / location data.
+- **Multi-station awareness** so every networked logger can originate contacts from its own grid square or lat/lon.
 
 ## Prerequisites
 - Docker and Docker Compose (for containerized deployment), or Python 3.10+ for a local run.
@@ -57,6 +58,15 @@ PREFER_SECTION_ALWAYS: false   # force all contacts to section centroids if true
 TTL_SECONDS: 600               # how long a path persists (seconds)
 HEARTBEAT_SECONDS: 5           # poll interval for liveness
 
+# Identity & station origins
+PRIMARY_STATION_NAME: "Run 1"   # label for the PC hosting the TCP API
+STATION_LOCATIONS:
+  "Run 1":
+    grid: "FN31pr"              # grid or lat/lon for the primary logger
+  "GOTA":
+    lat: 34.932
+    lon: -81.025
+
 # QRZ lookup (optional)
 QRZ_USERNAME: ""
 QRZ_PASSWORD: ""
@@ -68,6 +78,8 @@ MODE_FILTER: ""               # e.g. "PH,CW"
 ```
 
 Configuration values in the YAML file take precedence over environment variables. After editing the file, restart the container to apply the changes.
+
+`STATION_LOCATIONS` is optional but highly recommended when you network multiple PCs via N3FJP's File Share or TCP methods. Each key should match the "Station Name" you configure in the Network Status Display form, and you can supply either a Maidenhead grid or explicit `lat`/`lon` coordinates. The UI will show a marker for every configured station so arcs originate from the correct location even when contacts are logged remotely. `PRIMARY_STATION_NAME` controls the label for the machine hosting the TCP API.
 
 ### Environment variables
 You can override most configuration keys using environment variables (matching the YAML keys). The compose file sets `CONFIG_FILE=/config/config.yaml` so the application loads your YAML configuration automatically. Additional useful variables include:
