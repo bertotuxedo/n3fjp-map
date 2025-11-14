@@ -5,6 +5,11 @@ N3FJP_API_PORT: 1100
 N3FJP_STATUS_PORT: 1000
 ENABLE_API_PORT: true
 ENABLE_STATUS_PORT: true
+ADDON_STATUS_ENDPOINTS:
+  # Example:
+  #   GOTA:
+  #     host: "192.168.1.150"
+  #     port: 1000
 
 # Behavior
 WFD_MODE: true                 # prefer section centroids when available

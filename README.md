@@ -13,6 +13,7 @@ Real-time map and globe visualization for stations logging contacts with the N3F
 - **Operator, band, and mode filters** applied client-side.
 - **ARRL section tracking** with automatic greying of worked sections.
 - **Status dashboard** showing API heartbeat, origin fix, and recent contacts.
+- **Station status & chat sidebar** so operators can see which station is active on each band/mode and read the latest messages.
 - **Optional QRZ.com integration** to improve DX station grid / location data.
 - **Multi-station awareness** so every networked logger can originate contacts from its own grid square or lat/lon.
 - **Dual-port ingest** that merges the 1100 API feed with the 1000 status/chat feed so every connected station is represented.
@@ -56,6 +57,10 @@ N3FJP_API_PORT: 1100        # optional explicit override for the API feed
 N3FJP_STATUS_PORT: 1000     # TCP status / chat feed (port 1000)
 ENABLE_API_PORT: true       # disable if you only want status data
 ENABLE_STATUS_PORT: true    # disable if you only want API data
+ADDON_STATUS_ENDPOINTS:     # optional extra local stations (IP + port 1000)
+  # GOTA:
+  #   host: "192.168.1.150"
+  #   port: 1000
 
 # Behavior
 WFD_MODE: true                 # prefer ARRL section centroids when available
@@ -83,6 +88,8 @@ MODE_FILTER: ""               # e.g. "PH,CW"
 ```
 
 Configuration values in the YAML file take precedence over environment variables. After editing the file, restart the container to apply the changes.
+
+`ADDON_STATUS_ENDPOINTS` lets you point the service at additional N3FJP loggers on your LAN (each typically exposing the status/chat feed on TCP port 1000). Provide a `host`/`port` pair for every add-on station and the app will open a dedicated connection so their band/mode, operator, and chat text appear in the sidebar alongside the primary 192.168.1.123 host.
 
 `STATION_LOCATIONS` is optional but highly recommended when you network multiple PCs via N3FJP's File Share or TCP methods. Each key should match the "Station Name" you configure in the Network Status Display form, and you can supply either a Maidenhead grid or explicit `lat`/`lon` coordinates. The UI will show a marker for every configured station so arcs originate from the correct location even when contacts are logged remotely. `PRIMARY_STATION_NAME` controls the label for the machine hosting the TCP API.
 

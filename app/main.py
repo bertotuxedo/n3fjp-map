@@ -85,12 +85,14 @@ def cfg_get(name: str, default: Any):
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 # ---------- Config ----------
-N3FJP_HOST = cfg_get("N3FJP_HOST", "127.0.0.1")
+# Primary N3FJP TCP server (port 1100 for API, 1000 for chat/status)
+N3FJP_HOST = cfg_get("N3FJP_HOST", "192.168.1.123")
 _LEGACY_PORT = cfg_get("N3FJP_PORT", 1100)
 N3FJP_API_PORT = cfg_get("N3FJP_API_PORT", _LEGACY_PORT)
 N3FJP_STATUS_PORT = cfg_get("N3FJP_STATUS_PORT", 1000)
 ENABLE_API_PORT = cfg_get("ENABLE_API_PORT", True)
 ENABLE_STATUS_PORT = cfg_get("ENABLE_STATUS_PORT", True)
+ADDON_STATUS_ENDPOINTS_RAW = cfg_get("ADDON_STATUS_ENDPOINTS", [])
 
 WFD_MODE = cfg_get("WFD_MODE", False)
 PREFER_SECTION_ALWAYS = cfg_get("PREFER_SECTION_ALWAYS", False)
@@ -106,6 +108,120 @@ STATION_LOCATIONS_RAW = cfg_get("STATION_LOCATIONS", {})
 QRZ_USERNAME = cfg_get("QRZ_USERNAME", "")
 QRZ_PASSWORD = cfg_get("QRZ_PASSWORD", "")
 QRZ_AGENT = cfg_get("QRZ_AGENT", "n3fjp-map") or "n3fjp-map"
+
+
+def _slugify_endpoint_label(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    slug = re.sub(r"[^0-9a-zA-Z]+", "-", value.strip().lower())
+    return slug.strip("-")
+
+
+def _build_status_endpoint(host: str, port: int, label: str, *, source: Optional[str] = None) -> Dict[str, Any]:
+    safe_label = label.strip() or f"{host}:{port}"
+    slug = _slugify_endpoint_label(safe_label) or _slugify_endpoint_label(f"{host}-{port}") or "status"
+    return {
+        "host": host,
+        "port": port,
+        "label": safe_label,
+        "connection_key": f"status:{slug}",
+        "source": source or f"status:{slug}",
+    }
+
+
+def _coerce_addon_endpoint(spec: Any, fallback_label: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    host: Optional[str] = None
+    port_val: Any = N3FJP_STATUS_PORT
+    label: Optional[str] = fallback_label
+    source = None
+    if spec is None:
+        return None
+    if isinstance(spec, dict):
+        host = (
+            spec.get("host")
+            or spec.get("ip")
+            or spec.get("address")
+            or spec.get("server")
+        )
+        port_val = spec.get("port") or spec.get("tcp_port") or N3FJP_STATUS_PORT
+        label = spec.get("name") or spec.get("label") or spec.get("station") or label
+        source = spec.get("source") or spec.get("name") or spec.get("station")
+    elif isinstance(spec, str):
+        text = spec.strip()
+        if not text:
+            return None
+        if "@" in text:
+            maybe_label, maybe_addr = text.split("@", 1)
+            if maybe_addr:
+                label = maybe_label.strip() or label
+                text = maybe_addr.strip()
+        if ":" in text:
+            host_part, port_part = text.rsplit(":", 1)
+            host = host_part.strip() or None
+            try:
+                port_val = int(port_part.strip())
+            except Exception:
+                port_val = N3FJP_STATUS_PORT
+        else:
+            host = text
+    else:
+        return None
+    if not host:
+        return None
+    try:
+        port = int(port_val)
+    except Exception:
+        port = N3FJP_STATUS_PORT
+    label = label or host
+    return _build_status_endpoint(host, port, label, source=source)
+
+
+def build_status_endpoints(primary_host: str, primary_port: int, addons_raw: Any) -> List[Dict[str, Any]]:
+    endpoints: List[Dict[str, Any]] = []
+    seen_keys: Set[str] = set()
+
+    def append_endpoint(ep: Optional[Dict[str, Any]]):
+        if not ep:
+            return
+        key = ep.get("connection_key")
+        if not key:
+            slug = _slugify_endpoint_label(ep.get("label"))
+            if slug:
+                key = f"status:{slug}"
+            else:
+                key = f"status:{len(endpoints) + 1}"
+        if key in seen_keys:
+            base = key
+            suffix = 2
+            new_key = f"{base}-{suffix}"
+            while new_key in seen_keys:
+                suffix += 1
+                new_key = f"{base}-{suffix}"
+            key = new_key
+        seen_keys.add(key)
+        ep["connection_key"] = key
+        endpoints.append(ep)
+
+    append_endpoint(
+        _build_status_endpoint(
+            primary_host,
+            primary_port,
+            "Primary N3FJP status/chat",
+            source="status:primary",
+        )
+    )
+    if isinstance(addons_raw, dict):
+        for key, value in addons_raw.items():
+            append_endpoint(_coerce_addon_endpoint(value, fallback_label=str(key)))
+    elif isinstance(addons_raw, (list, tuple)):
+        for idx, value in enumerate(addons_raw):
+            append_endpoint(_coerce_addon_endpoint(value, fallback_label=f"addon-{idx + 1}"))
+    else:
+        append_endpoint(_coerce_addon_endpoint(addons_raw))
+    return endpoints
+
+
+STATUS_ENDPOINTS = build_status_endpoints(N3FJP_HOST, N3FJP_STATUS_PORT, ADDON_STATUS_ENDPOINTS_RAW)
 
 
 def canonical_station_key(name: Optional[str]) -> Optional[str]:
@@ -1277,21 +1393,28 @@ async def n3fjp_api_client():
 
 
 
-async def n3fjp_status_client():
+async def n3fjp_status_client(endpoint: Dict[str, Any]):
+    host = endpoint.get("host", N3FJP_HOST)
+    port = endpoint.get("port", N3FJP_STATUS_PORT)
+    label = endpoint.get("label", f"{host}:{port}")
+    conn_key = endpoint.get("connection_key", f"status:{host}:{port}")
+    source_name = endpoint.get("source", conn_key)
     await asyncio.sleep(1)
     while True:
         try:
-            logging.info(f"Connecting to N3FJP status feed at {N3FJP_HOST}:{N3FJP_STATUS_PORT} ...")
-            reader, writer = await asyncio.open_connection(N3FJP_HOST, N3FJP_STATUS_PORT)
-            hub.update_connection_state("status", connected=True, port=N3FJP_STATUS_PORT)
+            logging.info(
+                f"Connecting to {label} status/chat feed at {host}:{port} ..."
+            )
+            reader, writer = await asyncio.open_connection(host, port)
+            hub.update_connection_state(conn_key, connected=True, port=port)
             await hub.broadcast({"type": "status", "data": hub.compose_status()})
-            logging.info("Connected to N3FJP status feed.")
+            logging.info(f"Connected to {label} status/chat feed.")
             try:
                 buf = bytearray()
                 while True:
                     chunk = await reader.read(4096)
                     if not chunk:
-                        raise ConnectionError("N3FJP status feed closed the socket")
+                        raise ConnectionError(f"{label} closed the socket")
                     buf.extend(chunk)
                     while True:
                         rec = _extract_one_frame(buf)
@@ -1320,7 +1443,7 @@ async def n3fjp_status_client():
                             station_name,
                             meta=payload,
                             location=location,
-                            source="status",
+                            source=source_name,
                         )
                         operator = payload.get("operator")
                         if operator and operator not in hub.operators_seen:
@@ -1331,13 +1454,13 @@ async def n3fjp_status_client():
                     writer.close()
                     await writer.wait_closed()
         except asyncio.CancelledError:
-            logging.warning("n3fjp_status_client task cancelled")
-            hub.update_connection_state("status", connected=False, port=N3FJP_STATUS_PORT)
+            logging.warning(f"{label} status/chat client task cancelled")
+            hub.update_connection_state(conn_key, connected=False, port=port)
             await hub.broadcast({"type": "status", "data": hub.compose_status()})
             raise
         except Exception as e:
-            logging.exception("N3FJP status connection loop crashed")
-            hub.update_connection_state("status", connected=False, port=N3FJP_STATUS_PORT, error=str(e))
+            logging.exception(f"{label} status/chat connection loop crashed")
+            hub.update_connection_state(conn_key, connected=False, port=port, error=str(e))
             await hub.broadcast({"type": "status", "data": hub.compose_status()})
             await asyncio.sleep(2)
 
@@ -1347,7 +1470,12 @@ async def startup_event():
     if ENABLE_API_PORT:
         tasks.append(asyncio.create_task(n3fjp_api_client()))
     if ENABLE_STATUS_PORT:
-        tasks.append(asyncio.create_task(n3fjp_status_client()))
+        if not STATUS_ENDPOINTS:
+            logging.warning(
+                "ENABLE_STATUS_PORT is true but no status/chat endpoints were defined"
+            )
+        for endpoint in STATUS_ENDPOINTS:
+            tasks.append(asyncio.create_task(n3fjp_status_client(endpoint)))
     app.state.n3fjp_tasks = tasks
 
 @app.on_event("shutdown")
