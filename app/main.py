@@ -8,7 +8,6 @@ import re
 import json
 import logging
 import unicodedata
-from pathlib import Path
 from typing import Set, Dict, Any, Optional, Deque, Tuple, List
 from collections import deque
 import copy
@@ -74,25 +73,14 @@ def cfg_get(name: str, default: Any):
             return int(val)
         except Exception:
             return default
-    if isinstance(default, (dict, list)):
-        try:
-            return json.loads(val)
-        except Exception:
-            return default
     return val
 
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 # ---------- Config ----------
-# Primary N3FJP TCP server (port 1100 for API, 1000 for chat/status)
-N3FJP_HOST = cfg_get("N3FJP_HOST", "192.168.1.123")
-_LEGACY_PORT = cfg_get("N3FJP_PORT", 1100)
-N3FJP_API_PORT = cfg_get("N3FJP_API_PORT", _LEGACY_PORT)
-N3FJP_STATUS_PORT = cfg_get("N3FJP_STATUS_PORT", 1000)
-ENABLE_API_PORT = cfg_get("ENABLE_API_PORT", True)
-ENABLE_STATUS_PORT = cfg_get("ENABLE_STATUS_PORT", True)
-ADDON_STATUS_ENDPOINTS_RAW = cfg_get("ADDON_STATUS_ENDPOINTS", [])
+N3FJP_HOST = cfg_get("N3FJP_HOST", "127.0.0.1")
+N3FJP_PORT = cfg_get("N3FJP_PORT", 1100)
 
 WFD_MODE = cfg_get("WFD_MODE", False)
 PREFER_SECTION_ALWAYS = cfg_get("PREFER_SECTION_ALWAYS", False)
@@ -102,135 +90,9 @@ MODE_FILTER = set([m.strip().upper() for m in str(cfg_get("MODE_FILTER", "")).sp
 
 HEARTBEAT_SECONDS = max(3, cfg_get("HEARTBEAT_SECONDS", 5))
 
-PRIMARY_STATION_NAME = cfg_get("PRIMARY_STATION_NAME", "Primary Station")
-STATION_LOCATIONS_RAW = cfg_get("STATION_LOCATIONS", {})
-
 QRZ_USERNAME = cfg_get("QRZ_USERNAME", "")
 QRZ_PASSWORD = cfg_get("QRZ_PASSWORD", "")
 QRZ_AGENT = cfg_get("QRZ_AGENT", "n3fjp-map") or "n3fjp-map"
-
-
-def _slugify_endpoint_label(value: Optional[str]) -> str:
-    if not value:
-        return ""
-    slug = re.sub(r"[^0-9a-zA-Z]+", "-", value.strip().lower())
-    return slug.strip("-")
-
-
-def _build_status_endpoint(host: str, port: int, label: str, *, source: Optional[str] = None) -> Dict[str, Any]:
-    safe_label = label.strip() or f"{host}:{port}"
-    slug = _slugify_endpoint_label(safe_label) or _slugify_endpoint_label(f"{host}-{port}") or "status"
-    return {
-        "host": host,
-        "port": port,
-        "label": safe_label,
-        "connection_key": f"status:{slug}",
-        "source": source or f"status:{slug}",
-    }
-
-
-def _coerce_addon_endpoint(spec: Any, fallback_label: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    host: Optional[str] = None
-    port_val: Any = N3FJP_STATUS_PORT
-    label: Optional[str] = fallback_label
-    source = None
-    if spec is None:
-        return None
-    if isinstance(spec, dict):
-        host = (
-            spec.get("host")
-            or spec.get("ip")
-            or spec.get("address")
-            or spec.get("server")
-        )
-        port_val = spec.get("port") or spec.get("tcp_port") or N3FJP_STATUS_PORT
-        label = spec.get("name") or spec.get("label") or spec.get("station") or label
-        source = spec.get("source") or spec.get("name") or spec.get("station")
-    elif isinstance(spec, str):
-        text = spec.strip()
-        if not text:
-            return None
-        if "@" in text:
-            maybe_label, maybe_addr = text.split("@", 1)
-            if maybe_addr:
-                label = maybe_label.strip() or label
-                text = maybe_addr.strip()
-        if ":" in text:
-            host_part, port_part = text.rsplit(":", 1)
-            host = host_part.strip() or None
-            try:
-                port_val = int(port_part.strip())
-            except Exception:
-                port_val = N3FJP_STATUS_PORT
-        else:
-            host = text
-    else:
-        return None
-    if not host:
-        return None
-    try:
-        port = int(port_val)
-    except Exception:
-        port = N3FJP_STATUS_PORT
-    label = label or host
-    return _build_status_endpoint(host, port, label, source=source)
-
-
-def build_status_endpoints(primary_host: str, primary_port: int, addons_raw: Any) -> List[Dict[str, Any]]:
-    endpoints: List[Dict[str, Any]] = []
-    seen_keys: Set[str] = set()
-
-    def append_endpoint(ep: Optional[Dict[str, Any]]):
-        if not ep:
-            return
-        key = ep.get("connection_key")
-        if not key:
-            slug = _slugify_endpoint_label(ep.get("label"))
-            if slug:
-                key = f"status:{slug}"
-            else:
-                key = f"status:{len(endpoints) + 1}"
-        if key in seen_keys:
-            base = key
-            suffix = 2
-            new_key = f"{base}-{suffix}"
-            while new_key in seen_keys:
-                suffix += 1
-                new_key = f"{base}-{suffix}"
-            key = new_key
-        seen_keys.add(key)
-        ep["connection_key"] = key
-        endpoints.append(ep)
-
-    append_endpoint(
-        _build_status_endpoint(
-            primary_host,
-            primary_port,
-            "Primary N3FJP status/chat",
-            source="status:primary",
-        )
-    )
-    if isinstance(addons_raw, dict):
-        for key, value in addons_raw.items():
-            append_endpoint(_coerce_addon_endpoint(value, fallback_label=str(key)))
-    elif isinstance(addons_raw, (list, tuple)):
-        for idx, value in enumerate(addons_raw):
-            append_endpoint(_coerce_addon_endpoint(value, fallback_label=f"addon-{idx + 1}"))
-    else:
-        append_endpoint(_coerce_addon_endpoint(addons_raw))
-    return endpoints
-
-
-STATUS_ENDPOINTS = build_status_endpoints(N3FJP_HOST, N3FJP_STATUS_PORT, ADDON_STATUS_ENDPOINTS_RAW)
-
-
-def canonical_station_key(name: Optional[str]) -> Optional[str]:
-    if name is None:
-        return None
-    cleaned = re.sub(r"\s+", " ", str(name)).strip()
-    if not cleaned:
-        return None
-    return cleaned.upper()
 
 
 class QRZClient:
@@ -337,15 +199,12 @@ class QRZClient:
 qrz_client = QRZClient(QRZ_USERNAME, QRZ_PASSWORD, QRZ_AGENT)
 
 # ---------- FastAPI ----------
-BASE_DIR = Path(__file__).resolve().parent
-STATIC_DIR = BASE_DIR / "static"
-
 app = FastAPI()
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 async def root():
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    return FileResponse("static/index.html")
 
 @app.get("/health")
 async def health():
@@ -353,14 +212,9 @@ async def health():
 
 # ---------- Hub (WS fanout + state) ----------
 class Hub:
-    def __init__(
-        self,
-        initial_station_origins: Optional[Dict[str, Dict[str, Any]]] = None,
-        primary_station_name: Optional[str] = None,
-    ):
+    def __init__(self):
         self.clients: Set[WebSocket] = set()
         self.origin = {"lat": None, "lon": None, "grid": None}
-        self.primary_station_name = (primary_station_name or "Primary Station").strip() or "Primary Station"
         self.state = {
             "connected": False,
             "last_connect_ts": None,
@@ -370,7 +224,6 @@ class Hub:
             "apiver": None,
             "program": None,
             "last_raw": None,
-            "connections": {},
         }
         self.recent_raw: Deque[str] = deque(maxlen=100)
         self.recent_draw: Deque[Tuple[str, str, str, float]] = deque(maxlen=128)  # (call, band, mode, ts)
@@ -380,7 +233,6 @@ class Hub:
         self.operators_seen: Set[str] = set()
         self.sections_worked: Set[str] = set()
         self.countries_worked: Set[str] = set()
-        self.station_origins: Dict[str, Dict[str, Any]] = {}
         # metrics
         self.metrics = {
             "frames_parsed_total": 0,
@@ -389,8 +241,6 @@ class Hub:
             "sections_worked_total": 0,
             "countries_worked_total": 0,
         }
-        self.connection_states: Dict[str, Dict[str, Any]] = {}
-        self._preload_station_origins(initial_station_origins or {})
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
@@ -398,9 +248,7 @@ class Hub:
         self.metrics["ws_clients_gauge"] = len(self.clients)
         await ws.send_json({"type": "status", "data": self.compose_status()})
         if self.origin["lat"] is not None:
-            await ws.send_json({"type": "origin", "data": self.origin_payload()})
-        if self.station_origins:
-            await ws.send_json({"type": "station_origins", "data": self.station_origin_entries()})
+            await ws.send_json({"type": "origin", "data": self.origin})
         if self.operators_seen:
             await ws.send_json({"type": "operators", "data": sorted(self.operators_seen)})
         if self.sections_worked:
@@ -426,8 +274,6 @@ class Hub:
         return {
             **self.state,
             "origin": self.origin,
-            "primary_station_name": self.primary_station_name,
-            "station_origins": self.station_origin_entries(),
             "operators": sorted(self.operators_seen),
             "sections_worked": sorted(self.sections_worked),
             "countries_worked": sorted(self.countries_worked),
@@ -436,48 +282,6 @@ class Hub:
             "prefer_section": PREFER_SECTION_ALWAYS,
             "ttl_seconds": TTL_SECONDS,
         }
-
-    def update_connection_state(
-        self,
-        name: str,
-        *,
-        connected: bool,
-        port: Optional[int] = None,
-        error: Optional[str] = None,
-    ) -> None:
-        now = time.time()
-        entry = self.connection_states.setdefault(
-            name,
-            {
-                "connected": False,
-                "last_connect_ts": None,
-                "last_disconnect_ts": None,
-                "last_error": None,
-                "port": port,
-            },
-        )
-        if port is not None:
-            entry["port"] = port
-        if connected:
-            if not entry["connected"]:
-                entry["last_connect_ts"] = now
-            entry["connected"] = True
-            entry["last_error"] = None
-        else:
-            if entry["connected"]:
-                entry["last_disconnect_ts"] = now
-            entry["connected"] = False
-            if error:
-                entry["last_error"] = error
-        if error:
-            entry["last_error"] = error
-            self.state["last_error"] = error
-        if connected:
-            self.state["last_connect_ts"] = now
-        else:
-            self.state["last_disconnect_ts"] = now
-        self.state["connections"] = {k: {**v} for k, v in self.connection_states.items()}
-        self.state["connected"] = any(v.get("connected") for v in self.connection_states.values())
 
     def should_draw(self, call: Optional[str], band: Optional[str], mode: Optional[str]) -> bool:
         now = time.time()
@@ -574,167 +378,10 @@ class Hub:
             "to": to,
         })
 
-    def origin_payload(self) -> Dict[str, Any]:
-        payload = copy.deepcopy(self.origin)
-        payload["name"] = self.primary_station_name
-        return payload
-
-    def station_origin_entries(self) -> List[Dict[str, Any]]:
-        entries = [self._public_station_entry(v) for v in self.station_origins.values()]
-        entries.sort(key=lambda item: (item.get("name") or "").upper())
-        return entries
-
-    def _public_station_entry(self, entry: Dict[str, Any]) -> Dict[str, Any]:
-        payload = copy.deepcopy(entry)
-        sources = payload.get("sources")
-        if isinstance(sources, set):
-            payload["sources"] = sorted(sources)
-        return payload
-
-    def _preload_station_origins(self, initial: Dict[str, Dict[str, Any]]):
-        for key, entry in initial.items():
-            if not entry:
-                continue
-            safe = self._safe_station_origin(entry)
-            if not safe:
-                continue
-            canon = canonical_station_key(entry.get("name") or key)
-            if not canon:
-                continue
-            self.station_origins[canon] = safe
-        prim_key = canonical_station_key(self.primary_station_name)
-        if prim_key and self.origin["lat"] is None:
-            entry = self.station_origins.get(prim_key)
-            if entry:
-                self.origin = {k: entry.get(k) for k in ("lat", "lon", "grid")}
-
-    def _safe_station_origin(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        if not data:
-            return None
-        lat = data.get("lat")
-        lon = data.get("lon")
-        if lat is None or lon is None:
-            return None
-        try:
-            lat_f = float(lat)
-            lon_f = float(lon)
-        except Exception:
-            return None
-        payload = {"lat": lat_f, "lon": lon_f}
-        grid = data.get("grid") or data.get("maidenhead")
-        if grid:
-            payload["grid"] = str(grid).upper()
-        else:
-            try:
-                payload["grid"] = maidenhead_from_latlon(lat_f, lon_f)
-            except Exception:
-                payload["grid"] = None
-        name = data.get("name") or data.get("station")
-        if name:
-            payload["name"] = str(name)
-        return payload
-
-    async def set_station_origin(self, name: Optional[str], origin: Optional[Dict[str, Any]]):
-        if not name or not origin:
-            return
-        safe = self._safe_station_origin({"name": name, **origin})
-        if not safe:
-            return
-        canon = canonical_station_key(name)
-        if not canon:
-            return
-        entry = self.station_origins.get(canon)
-        changed = False
-        if not entry:
-            entry = {"name": safe.get("name", name)}
-            self.station_origins[canon] = entry
-            changed = True
-        for key in ("lat", "lon", "grid"):
-            if safe.get(key) is not None and entry.get(key) != safe.get(key):
-                entry[key] = safe.get(key)
-                changed = True
-        if entry.get("name") != safe.get("name"):
-            entry["name"] = safe.get("name")
-            changed = True
-        if not changed:
-            return
-        if canonical_station_key(self.primary_station_name) == canon:
-            self.origin = {k: entry.get(k) for k in ("lat", "lon", "grid")}
-            await self.broadcast({"type": "origin", "data": self.origin_payload()})
-        await self.broadcast({"type": "station_origin", "data": self._public_station_entry(entry)})
-        await self.broadcast({"type": "status", "data": self.compose_status()})
-
-    async def update_station_presence(
-        self,
-        name: Optional[str],
-        meta: Optional[Dict[str, Any]] = None,
-        location: Optional[Dict[str, Any]] = None,
-        *,
-        source: Optional[str] = None,
-        force_broadcast: bool = False,
-    ) -> None:
-        if not name:
-            return
-        canon = canonical_station_key(name)
-        if not canon:
-            return
-        entry = self.station_origins.get(canon)
-        if not entry:
-            entry = {"name": name}
-            self.station_origins[canon] = entry
-        if entry.get("name") != name:
-            entry["name"] = name
-        changed = False
-        loc_payload = None
-        if location:
-            loc_payload = self._safe_station_origin({"name": name, **location})
-        if loc_payload:
-            for key in ("lat", "lon", "grid"):
-                if loc_payload.get(key) is not None and entry.get(key) != loc_payload.get(key):
-                    entry[key] = loc_payload.get(key)
-                    changed = True
-        if meta:
-            for key in ("call", "operator", "band", "mode", "status", "section", "country", "message"):
-                value = meta.get(key)
-                if value is not None and entry.get(key) != value:
-                    entry[key] = value
-                    changed = True
-        if source:
-            sources = entry.get("sources")
-            if isinstance(sources, set):
-                current_sources = sources
-            elif isinstance(sources, list):
-                current_sources = set(sources)
-            else:
-                current_sources = set()
-            if source not in current_sources:
-                current_sources.add(source)
-                entry["sources"] = current_sources
-                changed = True
-            else:
-                entry["sources"] = current_sources
-            if entry.get("last_source") != source:
-                entry["last_source"] = source
-                changed = True
-        entry["last_seen"] = time.time()
-        if changed or force_broadcast:
-            await self.broadcast({"type": "station_origin", "data": self._public_station_entry(entry)})
-            await self.broadcast({"type": "status", "data": self.compose_status()})
-
-    def get_station_origin(self, name: Optional[str]) -> Optional[Dict[str, Any]]:
-        target = None
-        if name:
-            canon = canonical_station_key(name)
-            if canon:
-                target = self.station_origins.get(canon)
-        if not target and self.origin.get("lat") is not None:
-            target = {**self.origin, "name": self.primary_station_name}
-        if not target:
-            return None
-        return {k: target.get(k) for k in ("lat", "lon", "grid")}
+hub = Hub()
 
 # ---------- Sections & countries (centroids only) ----------
-with open(STATIC_DIR / "data/centroids/sections.json", "r", encoding="utf-8") as f:
+with open("static/data/centroids/sections.json", "r", encoding="utf-8") as f:
     SECTION_CENTROIDS: Dict[str, Dict[str, float]] = json.load(f)
 
 
@@ -781,7 +428,7 @@ def country_centroid(name: Optional[str]) -> Optional[Dict[str, Any]]:
 
 
 try:
-    with open(STATIC_DIR / "data/centroids/countries.geojson", "r", encoding="utf-8") as f:
+    with open("static/data/centroids/countries.geojson", "r", encoding="utf-8") as f:
         countries_geo = json.load(f)
     for feature in countries_geo.get("features", []):
         props = feature.get("properties") or {}
@@ -848,31 +495,6 @@ def first_tag(text: str, *names: str) -> Optional[str]:
             return v
     return None
 
-
-STATION_NAME_TAGS = (
-    "STATIONNAME",
-    "THISSTATIONNAME",
-    "STATION",
-    "STATIONID",
-    "STATION_ID",
-    "STATIONCALL",
-    "CLIENTSTATION",
-    "CLIENTNAME",
-    "COMPUTERNAME",
-    "PCNAME",
-    "NETWORKSTATION",
-)
-
-
-def extract_station_name(text: str) -> Optional[str]:
-    for key in STATION_NAME_TAGS:
-        value = tag(text, key)
-        if value:
-            cleaned = value.strip()
-            if cleaned:
-                return cleaned
-    return None
-
 def parse_lon_west_positive(s: Optional[str]) -> Optional[float]:
     if s is None or s == "":
         return None
@@ -926,178 +548,6 @@ def section_to_latlon(section: Optional[str]) -> Optional[Dict[str, float]]:
     if not section: return None
     return SECTION_CENTROIDS.get(section.strip().upper())
 
-
-def _float_or_none(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except Exception:
-        return None
-
-
-def _parse_key_value_pairs(text: str) -> Dict[str, str]:
-    pairs: Dict[str, str] = {}
-    if not text:
-        return pairs
-    tokens = re.split(r"[|,\r\n]+", text)
-    for token in tokens:
-        token = token.strip()
-        if not token:
-            continue
-        if ":" in token:
-            key, value = token.split(":", 1)
-        elif "=" in token:
-            key, value = token.split("=", 1)
-        else:
-            continue
-        key = key.strip().lower()
-        if not key:
-            continue
-        pairs[key] = value.strip()
-    return pairs
-
-
-def parse_station_status_payload(text: str) -> Optional[Dict[str, Any]]:
-    if not text:
-        return None
-    text = text.strip()
-    if not text:
-        return None
-    pairs = _parse_key_value_pairs(text)
-    station = extract_station_name(text)
-    if not station:
-        for key in ("station", "stationname", "clientname", "networkstation"):
-            if key in pairs:
-                station = pairs[key]
-                break
-    call = first_tag(text, "CALL", "THISCALL", "STATIONCALL") or pairs.get("call")
-    operator = first_tag(text, "OPERATOR", "MYCALL", "OP") or pairs.get("operator")
-    band = first_tag(text, "BAND") or pairs.get("band")
-    mode = first_tag(text, "MODE", "MODETEST") or pairs.get("mode")
-    status_text = first_tag(text, "STATUS", "STATE", "CLIENTSTATUS", "CHATSTATUS") or pairs.get("status") or pairs.get("state")
-    section = first_tag(text, "SECTION", "ARRL_SECT") or pairs.get("section")
-    country = first_tag(text, "COUNTRY") or pairs.get("country")
-    grid = first_tag(text, "GRID", "MYGRID", "DXGRID", "STATIONGRID") or pairs.get("grid")
-    lat_s = first_tag(text, "LAT", "LATITUDE") or pairs.get("lat") or pairs.get("latitude")
-    lon_s = first_tag(text, "LON", "LONG", "LONGITUDE", "LONWEST") or pairs.get("lon") or pairs.get("longitude")
-    message = first_tag(text, "CHATMESSAGE", "MESSAGE", "TEXT") or pairs.get("message") or pairs.get("text")
-    timestamp = first_tag(text, "TIMESTAMP", "TIME", "LASTUPDATE") or pairs.get("timestamp") or pairs.get("time")
-
-    if "|" in text and not pairs:
-        parts = [p.strip() for p in text.split("|")]
-        if parts and not station:
-            station = parts[0]
-        if len(parts) > 1 and not operator:
-            operator = parts[1]
-        if len(parts) > 2 and not band:
-            band = parts[2]
-        if len(parts) > 3 and not mode:
-            mode = parts[3]
-        if len(parts) > 4 and not status_text:
-            status_text = parts[4]
-        if len(parts) > 5 and not grid:
-            grid = parts[5]
-
-    band = (band or "").strip()
-    if band.upper().endswith("M"):
-        band = band[:-1]
-    band = band or None
-    mode = (mode or "").strip().upper() or None
-    status_text = (status_text or "").strip() or None
-    section = (section or "").strip().upper() or None
-    country = (country or "").strip() or None
-    grid = (grid or "").strip().upper() or None
-
-    lat = _float_or_none(lat_s)
-    lon = parse_lon_west_positive(lon_s)
-    if lon is None:
-        lon = _float_or_none(lon_s)
-
-    if not station and not call and not operator:
-        return None
-    payload: Dict[str, Any] = {
-        "station": station,
-        "call": (call or "").strip() or None,
-        "operator": (operator or "").strip() or None,
-        "band": band,
-        "mode": mode,
-        "status": status_text,
-        "section": section,
-        "country": country,
-        "grid": grid,
-        "message": (message or "").strip() or None,
-    }
-    if lat is not None:
-        payload["lat"] = lat
-    if lon is not None:
-        payload["lon"] = lon
-    ts_val = _float_or_none(timestamp)
-    if ts_val is not None:
-        payload["timestamp"] = ts_val
-    return payload
-
-
-def _station_origin_from_spec(spec: Any) -> Optional[Dict[str, Any]]:
-    if spec is None:
-        return None
-    if isinstance(spec, str):
-        text = spec.strip()
-        if not text:
-            return None
-        if re.fullmatch(r"[A-Za-z]{2}\d{2}[A-Za-z]{0,2}", text):
-            coords = latlon_from_maidenhead(text)
-            if coords:
-                coords["grid"] = text.upper()
-                return coords
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            return None
-        return _station_origin_from_spec(parsed)
-    if isinstance(spec, dict):
-        lat_val = spec.get("lat") if spec.get("lat") is not None else spec.get("latitude")
-        lon_val = spec.get("lon") if spec.get("lon") is not None else spec.get("longitude")
-        lat = _float_or_none(lat_val)
-        lon = _float_or_none(lon_val)
-        grid = spec.get("grid") or spec.get("maidenhead")
-        if lat is not None and lon is not None:
-            dest = {"lat": lat, "lon": lon}
-            if grid:
-                dest["grid"] = str(grid).upper()
-            else:
-                try:
-                    dest["grid"] = maidenhead_from_latlon(lat, lon)
-                except Exception:
-                    dest["grid"] = None
-            return dest
-        if grid:
-            coords = latlon_from_maidenhead(str(grid))
-            if coords:
-                coords["grid"] = str(grid).upper()
-                return coords
-    return None
-
-
-def build_station_origin_map(raw: Any) -> Dict[str, Dict[str, Any]]:
-    result: Dict[str, Dict[str, Any]] = {}
-    if not isinstance(raw, dict):
-        return result
-    for name, spec in raw.items():
-        key = canonical_station_key(name)
-        if not key:
-            continue
-        entry = _station_origin_from_spec(spec)
-        if not entry:
-            continue
-        entry["name"] = str(name)
-        result[key] = entry
-    return result
-
-
-STATION_PRESETS = build_station_origin_map(STATION_LOCATIONS_RAW)
-hub = Hub(initial_station_origins=STATION_PRESETS, primary_station_name=PRIMARY_STATION_NAME)
-
 # ---------- Status endpoints ----------
 @app.get("/status")
 async def status():
@@ -1150,15 +600,6 @@ def _extract_one_frame(buffer: bytearray) -> Optional[str]:
     del buffer[: end + 6]
     return rec_bytes.decode(errors="ignore")
 
-
-def _extract_line(buffer: bytearray) -> Optional[str]:
-    newline = buffer.find(b"\n")
-    if newline == -1:
-        return None
-    raw = buffer[:newline]
-    del buffer[: newline + 1]
-    return raw.decode(errors="ignore").strip()
-
 async def _send(writer: asyncio.StreamWriter, cmd: str):
     writer.write((cmd + "\r\n").encode())
     await writer.drain()
@@ -1174,317 +615,195 @@ async def _heartbeat(writer: asyncio.StreamWriter):
         logging.info(f"Heartbeat ended: {e}")
 
 # ---------- N3FJP TCP client task ----------
-
-async def n3fjp_api_client():
+async def n3fjp_client():
     await asyncio.sleep(1)
     while True:
         try:
-            logging.info(f"Connecting to N3FJP at {N3FJP_HOST}:{N3FJP_API_PORT} ...")
-            reader, writer = await asyncio.open_connection(N3FJP_HOST, N3FJP_API_PORT)
-            hub.update_connection_state("api", connected=True, port=N3FJP_API_PORT)
+            logging.info(f"Connecting to N3FJP at {N3FJP_HOST}:{N3FJP_PORT} ...")
+            reader, writer = await asyncio.open_connection(N3FJP_HOST, N3FJP_PORT)
+            hub.state.update(connected=True, last_connect_ts=time.time(), last_error=None)
             await hub.broadcast({"type": "status", "data": hub.compose_status()})
             logging.info("Connected to N3FJP.")
 
-            hb_task: Optional[asyncio.Task] = None
-            try:
-                await _send(writer, "<CMD><APIVER></CMD>")
-                await _send(writer, "<CMD><PROGRAM></CMD>")
-                await _send(writer, "<CMD><SETUPDATESTATE><VALUE>TRUE</VALUE></CMD>")
+            # bootstrap
+            await _send(writer, "<CMD><APIVER></CMD>")
+            await _send(writer, "<CMD><PROGRAM></CMD>")
+            await _send(writer, "<CMD><SETUPDATESTATE><VALUE>TRUE</VALUE></CMD>")
+            await _send(writer, "<CMD><OPINFO></CMD>")
+
+            hb_task = asyncio.create_task(_heartbeat(writer))
+            buf = bytearray()
+            last_emit = 0.0
+
+            async def refresh_origin_from_opinfo():
                 await _send(writer, "<CMD><OPINFO></CMD>")
 
-                hb_task = asyncio.create_task(_heartbeat(writer))
-                buf = bytearray()
-                last_emit = 0.0
-
-                async def refresh_origin_from_opinfo():
-                    await _send(writer, "<CMD><OPINFO></CMD>")
+            while True:
+                chunk = await reader.read(4096)
+                if not chunk:
+                    raise ConnectionError("N3FJP closed the socket")
+                buf.extend(chunk)
 
                 while True:
-                    chunk = await reader.read(4096)
-                    if not chunk:
-                        raise ConnectionError("N3FJP closed the socket")
-                    buf.extend(chunk)
+                    rec = _extract_one_frame(buf)
+                    if rec is None:
+                        break
 
-                    while True:
-                        rec = _extract_one_frame(buf)
-                        if rec is None:
-                            break
+                    hub.metrics["frames_parsed_total"] += 1
+                    hub.state["last_raw"] = rec
+                    hub.recent_raw.append(rec)
+                    recU = rec.upper()
 
-                        hub.metrics["frames_parsed_total"] += 1
-                        hub.state["last_raw"] = rec
-                        hub.recent_raw.append(rec)
-                        recU = rec.upper()
+                    # Version/Program
+                    if "APIVERRESPONSE" in recU:
+                        hub.state["apiver"] = tag(rec, "APIVER")
+                        await hub.broadcast({"type": "status", "data": hub.compose_status()})
+                        continue
+                    if "PROGRAMRESPONSE" in recU:
+                        pgm = tag(rec, "PGM"); ver = tag(rec, "VER")
+                        hub.state["program"] = f"{pgm or ''} {ver or ''}".strip()
+                        await hub.broadcast({"type": "status", "data": hub.compose_status()})
+                        continue
 
-                        if "APIVERRESPONSE" in recU:
-                            hub.state["apiver"] = tag(rec, "APIVER")
-                            await hub.broadcast({"type": "status", "data": hub.compose_status()})
-                            continue
-                        if "PROGRAMRESPONSE" in recU:
-                            pgm = tag(rec, "PGM"); ver = tag(rec, "VER")
-                            hub.state["program"] = f"{pgm or ''} {ver or ''}".strip()
-                            await hub.broadcast({"type": "status", "data": hub.compose_status()})
-                            continue
+                    # Origin from OPINFO (GRID preferred)
+                    if "OPINFORESPONSE" in recU:
+                        grid = tag(rec, "GRID")
+                        lat_s = tag(rec, "LAT")
+                        lon_s = first_tag(rec, "LON", "LONG")
+                        origin = None
+                        if grid:
+                            origin = latlon_from_maidenhead(grid)
+                            if origin: origin["grid"] = grid
+                        elif lat_s and lon_s:
+                            lat = float(lat_s); lon = parse_lon_west_positive(lon_s)
+                            if lon is not None:
+                                origin = {"lat": lat, "lon": lon}
+                                origin["grid"] = maidenhead_from_latlon(lat, lon)
+                        if origin:
+                            hub.origin = origin
+                            await hub.broadcast({"type":"origin","data":hub.origin})
+                            await hub.broadcast({"type":"status","data":hub.compose_status()})
+                        continue
 
-                        if "OPINFORESPONSE" in recU:
-                            grid = tag(rec, "GRID")
-                            lat_s = tag(rec, "LAT")
-                            lon_s = first_tag(rec, "LON", "LONG")
-                            origin = None
-                            if grid:
-                                origin = latlon_from_maidenhead(grid)
-                                if origin:
-                                    origin["grid"] = grid
-                            elif lat_s and lon_s:
-                                lat = float(lat_s)
-                                lon = parse_lon_west_positive(lon_s)
-                                if lon is not None:
-                                    origin = {"lat": lat, "lon": lon}
-                                    origin["grid"] = maidenhead_from_latlon(lat, lon)
-                            station_name = extract_station_name(rec)
-                            if station_name:
-                                hub.primary_station_name = station_name
-                            if origin:
-                                target_station = station_name or hub.primary_station_name
-                                if target_station:
-                                    await hub.set_station_origin(target_station, origin)
-                                else:
-                                    hub.origin = origin
-                                    await hub.broadcast({"type": "origin", "data": hub.origin_payload()})
-                                    await hub.broadcast({"type": "status", "data": hub.compose_status()})
-                            continue
+                    # Draw ONLY on ENTEREVENT (submit)
+                    if "ENTEREVENT" in recU:
+                        await refresh_origin_from_opinfo()
 
-                        if "ENTEREVENT" in recU:
-                            await refresh_origin_from_opinfo()
+                        call = tag(rec, "CALL")
+                        band = tag(rec, "BAND")
+                        mode = (tag(rec, "MODE") or tag(rec, "MODETEST") or "").upper()
+                        sect = (first_tag(rec, "SECTION", "ARRL_SECT") or "").upper()
+                        oper = tag(rec, "OPERATOR") or tag(rec, "MYCALL") or ""
+                        country = tag(rec, "COUNTRY") or ""
 
-                            call = tag(rec, "CALL")
-                            band = tag(rec, "BAND")
-                            mode = (tag(rec, "MODE") or tag(rec, "MODETEST") or "").upper()
-                            sect = (first_tag(rec, "SECTION", "ARRL_SECT") or "").upper()
-                            oper = tag(rec, "OPERATOR") or tag(rec, "MYCALL") or ""
-                            country = tag(rec, "COUNTRY") or ""
-                            station_name = extract_station_name(rec)
-
-                            if oper and oper not in hub.operators_seen:
+                        # track operators seen
+                        if oper:
+                            if oper not in hub.operators_seen:
                                 hub.operators_seen.add(oper)
-                                await hub.broadcast({"type": "operators", "data": sorted(hub.operators_seen)})
+                                await hub.broadcast({"type":"operators","data":sorted(hub.operators_seen)})
 
-                            if station_name:
-                                await hub.update_station_presence(
-                                    station_name,
-                                    meta={
-                                        "call": call,
-                                        "band": band,
-                                        "mode": mode,
-                                        "section": sect,
-                                        "operator": oper,
-                                        "country": country or None,
-                                    },
-                                    source="api",
-                                )
+                        # destination selection
+                        tlat_s = tag(rec, "LAT")
+                        tlon_s = first_tag(rec, "LON", "LONG")
+                        dest = None
+                        base_meta = {
+                            "call": call,
+                            "band": band,
+                            "mode": mode,
+                            "section": sect,
+                            "operator": oper,
+                        }
+                        if country:
+                            base_meta["country"] = country
+                        call_key = (call or "").upper()
 
-                            tlat_s = tag(rec, "LAT")
-                            tlon_s = first_tag(rec, "LON", "LONG")
-                            dest = None
-                            base_meta = {
-                                "call": call,
-                                "band": band,
-                                "mode": mode,
-                                "section": sect,
-                                "operator": oper,
+                        if (WFD_MODE or PREFER_SECTION_ALWAYS) and sect:
+                            sec = section_to_latlon(sect)
+                            if sec:
+                                dest = {"lat": sec["lat"], "lon": sec["lon"], "grid": None}
+                        if not dest and tlat_s and tlon_s:
+                            lat = float(tlat_s); lon = parse_lon_west_positive(tlon_s)
+                            if lon is not None:
+                                dest = {"lat": lat, "lon": lon, "grid": None}
+
+                        if not dest and call:
+                            dx_flag = parse_bool(tag(rec, "DX"))
+                            if dx_flag is None:
+                                dx_flag = bool(country and "USA" not in country.upper() and "UNITED STATES" not in country.upper())
+                            if dx_flag:
+                                qrz_result = await qrz_client.lookup(call)
+                                if qrz_result:
+                                    qrz_country = qrz_result.get("country")
+                                    if qrz_country:
+                                        base_meta["country"] = qrz_country
+                                    qrz_dest = qrz_result.get("dest")
+                                    if qrz_dest and qrz_dest.get("lat") is not None and qrz_dest.get("lon") is not None:
+                                        dest = qrz_dest
+                                    if not dest:
+                                        centroid = country_centroid(base_meta.get("country") or qrz_country)
+                                        if centroid:
+                                            dest = centroid
+
+                        if not dest and base_meta.get("country"):
+                            centroid = country_centroid(base_meta.get("country"))
+                            if centroid:
+                                dest = centroid
+
+                        if dest:
+                            hub.pending_meta.pop(call_key, None)
+                            now = time.time()
+                            if now - last_emit > 0.01:
+                                await hub.emit_path(dest, base_meta, TTL_SECONDS, origin_override=copy.deepcopy(hub.origin))
+                                last_emit = now
+                            continue
+
+                        if call:
+                            hub.pending_meta[call_key] = {
+                                "meta": copy.deepcopy(base_meta),
+                                "origin": copy.deepcopy(hub.origin),
                             }
-                            if station_name:
-                                base_meta["station"] = station_name
-                            if country:
-                                base_meta["country"] = country
-                            call_key = (call or "").upper()
-                            station_origin = hub.get_station_origin(station_name)
-                            origin_snapshot = copy.deepcopy(station_origin) if station_origin else None
-                            if origin_snapshot is None and hub.origin.get("lat") is not None:
-                                origin_snapshot = copy.deepcopy(hub.origin)
+                            await _send(writer, f"<CMD><COUNTRYLISTLOOKUP><CALL>{call}</CALL></CMD>")
 
-                            if (WFD_MODE or PREFER_SECTION_ALWAYS) and sect:
-                                sec = section_to_latlon(sect)
-                                if sec:
-                                    dest = {"lat": sec["lat"], "lon": sec["lon"], "grid": None}
-                            if not dest and tlat_s and tlon_s:
-                                lat = float(tlat_s)
-                                lon = parse_lon_west_positive(tlon_s)
-                                if lon is not None:
-                                    dest = {"lat": lat, "lon": lon, "grid": None}
+                        continue
 
-                            if not dest and call:
-                                dx_flag = parse_bool(tag(rec, "DX"))
-                                if dx_flag is None:
-                                    dx_flag = bool(country and "USA" not in country.upper() and "UNITED STATES" not in country.upper())
-                                if dx_flag:
-                                    qrz_result = await qrz_client.lookup(call)
-                                    if qrz_result:
-                                        qrz_country = qrz_result.get("country")
-                                        if qrz_country:
-                                            base_meta["country"] = qrz_country
-                                        qrz_dest = qrz_result.get("dest")
-                                        if qrz_dest and qrz_dest.get("lat") is not None and qrz_dest.get("lon") is not None:
-                                            dest = qrz_dest
-                                        if not dest:
-                                            centroid = country_centroid(base_meta.get("country") or qrz_country)
-                                            if centroid:
-                                                dest = centroid
+                    # COUNTRYLISTLOOKUP fallback
+                    if "COUNTRYLISTLOOKUPRESPONSE" in recU and hub.origin["lat"] is not None:
+                        call = tag(rec, "CALL")
+                        tlat_s = tag(rec, "LAT")
+                        tlon_s = first_tag(rec, "LON", "LONG")
+                        if tlat_s and tlon_s:
+                            lat = float(tlat_s); lon = parse_lon_west_positive(tlon_s)
+                            if lon is not None:
+                                dest = {"lat": lat, "lon": lon, "grid": maidenhead_from_latlon(lat, lon)}
+                                meta_info = hub.pending_meta.pop((call or "").upper(), None)
+                                meta_payload = {"call": call}
+                                origin_override = None
+                                if meta_info:
+                                    meta_payload = meta_info.get("meta", meta_payload)
+                                    origin_override = meta_info.get("origin")
+                                country_name = tag(rec, "COUNTRY") or tag(rec, "COUNTRY_NAME")
+                                if country_name and not meta_payload.get("country"):
+                                    meta_payload["country"] = country_name
+                                await hub.emit_path(dest, meta_payload, TTL_SECONDS, origin_override=origin_override)
+                        continue
 
-                            if not dest and base_meta.get("country"):
-                                centroid = country_centroid(base_meta.get("country"))
-                                if centroid:
-                                    dest = centroid
-
-                            if dest:
-                                hub.pending_meta.pop(call_key, None)
-                                now = time.time()
-                                if now - last_emit > 0.01:
-                                    await hub.emit_path(dest, base_meta, TTL_SECONDS, origin_override=copy.deepcopy(origin_snapshot) if origin_snapshot else None)
-                                    last_emit = now
-                                continue
-
-                            if call:
-                                hub.pending_meta[call_key] = {
-                                    "meta": copy.deepcopy(base_meta),
-                                    "origin": copy.deepcopy(origin_snapshot) if origin_snapshot else copy.deepcopy(hub.origin),
-                                }
-                                await _send(writer, f"<CMD><COUNTRYLISTLOOKUP><CALL>{call}</CALL></CMD>")
-
-                            continue
-
-                        if "COUNTRYLISTLOOKUPRESPONSE" in recU and hub.origin["lat"] is not None:
-                            call = tag(rec, "CALL")
-                            tlat_s = tag(rec, "LAT")
-                            tlon_s = first_tag(rec, "LON", "LONG")
-                            if tlat_s and tlon_s:
-                                lat = float(tlat_s)
-                                lon = parse_lon_west_positive(tlon_s)
-                                if lon is not None:
-                                    dest = {"lat": lat, "lon": lon, "grid": maidenhead_from_latlon(lat, lon)}
-                                    meta_info = hub.pending_meta.pop((call or "").upper(), None)
-                                    meta_payload = {"call": call}
-                                    origin_override = None
-                                    if meta_info:
-                                        meta_payload = meta_info.get("meta", meta_payload)
-                                        origin_override = meta_info.get("origin")
-                                    country_name = tag(rec, "COUNTRY") or tag(rec, "COUNTRY_NAME")
-                                    if country_name and not meta_payload.get("country"):
-                                        meta_payload["country"] = country_name
-                                    await hub.emit_path(dest, meta_payload, TTL_SECONDS, origin_override=origin_override)
-                            continue
-            finally:
-                if hb_task:
-                    hb_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await hb_task
-                with contextlib.suppress(Exception):
-                    writer.close()
-                    await writer.wait_closed()
         except asyncio.CancelledError:
-            logging.warning("n3fjp_api_client task cancelled")
-            hub.update_connection_state("api", connected=False, port=N3FJP_API_PORT)
-            await hub.broadcast({"type": "status", "data": hub.compose_status()})
+            logging.warning("n3fjp_client task cancelled")
             raise
         except Exception as e:
             logging.exception("N3FJP connection loop crashed")
-            hub.update_connection_state("api", connected=False, port=N3FJP_API_PORT, error=str(e))
-            await hub.broadcast({"type": "status", "data": hub.compose_status()})
-            await asyncio.sleep(2)
-
-
-
-async def n3fjp_status_client(endpoint: Dict[str, Any]):
-    host = endpoint.get("host", N3FJP_HOST)
-    port = endpoint.get("port", N3FJP_STATUS_PORT)
-    label = endpoint.get("label", f"{host}:{port}")
-    conn_key = endpoint.get("connection_key", f"status:{host}:{port}")
-    source_name = endpoint.get("source", conn_key)
-    await asyncio.sleep(1)
-    while True:
-        try:
-            logging.info(
-                f"Connecting to {label} status/chat feed at {host}:{port} ..."
-            )
-            reader, writer = await asyncio.open_connection(host, port)
-            hub.update_connection_state(conn_key, connected=True, port=port)
-            await hub.broadcast({"type": "status", "data": hub.compose_status()})
-            logging.info(f"Connected to {label} status/chat feed.")
-            try:
-                buf = bytearray()
-                while True:
-                    chunk = await reader.read(4096)
-                    if not chunk:
-                        raise ConnectionError(f"{label} closed the socket")
-                    buf.extend(chunk)
-                    while True:
-                        rec = _extract_one_frame(buf)
-                        if rec is None:
-                            rec = _extract_line(buf)
-                        if rec is None:
-                            break
-                        payload = parse_station_status_payload(rec)
-                        if not payload:
-                            continue
-                        hub.metrics["frames_parsed_total"] += 1
-                        hub.state["last_raw"] = rec
-                        hub.recent_raw.append(rec)
-                        station_name = payload.pop("station", None)
-                        lat = payload.pop("lat", None)
-                        lon = payload.pop("lon", None)
-                        grid = payload.get("grid")
-                        location = None
-                        if lat is not None and lon is not None:
-                            location = {"lat": lat, "lon": lon, "grid": grid or maidenhead_from_latlon(lat, lon)}
-                        elif grid:
-                            coords = latlon_from_maidenhead(grid)
-                            if coords:
-                                location = {"lat": coords["lat"], "lon": coords["lon"], "grid": grid}
-                        await hub.update_station_presence(
-                            station_name,
-                            meta=payload,
-                            location=location,
-                            source=source_name,
-                        )
-                        operator = payload.get("operator")
-                        if operator and operator not in hub.operators_seen:
-                            hub.operators_seen.add(operator)
-                            await hub.broadcast({"type": "operators", "data": sorted(hub.operators_seen)})
-            finally:
-                with contextlib.suppress(Exception):
-                    writer.close()
-                    await writer.wait_closed()
-        except asyncio.CancelledError:
-            logging.warning(f"{label} status/chat client task cancelled")
-            hub.update_connection_state(conn_key, connected=False, port=port)
-            await hub.broadcast({"type": "status", "data": hub.compose_status()})
-            raise
-        except Exception as e:
-            logging.exception(f"{label} status/chat connection loop crashed")
-            hub.update_connection_state(conn_key, connected=False, port=port, error=str(e))
+            hub.state.update(connected=False, last_disconnect_ts=time.time(), last_error=str(e))
             await hub.broadcast({"type": "status", "data": hub.compose_status()})
             await asyncio.sleep(2)
 
 @app.on_event("startup")
 async def startup_event():
-    tasks = []
-    if ENABLE_API_PORT:
-        tasks.append(asyncio.create_task(n3fjp_api_client()))
-    if ENABLE_STATUS_PORT:
-        if not STATUS_ENDPOINTS:
-            logging.warning(
-                "ENABLE_STATUS_PORT is true but no status/chat endpoints were defined"
-            )
-        for endpoint in STATUS_ENDPOINTS:
-            tasks.append(asyncio.create_task(n3fjp_status_client(endpoint)))
-    app.state.n3fjp_tasks = tasks
+    app.state.n3fjp_task = asyncio.create_task(n3fjp_client())
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    tasks = getattr(app.state, "n3fjp_tasks", []) or []
-    for task in tasks:
-        if task and not task.done():
-            task.cancel()
-    for task in tasks:
-        if task:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+    t = getattr(app.state, "n3fjp_task", None)
+    if t and not t.done():
+        t.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await t

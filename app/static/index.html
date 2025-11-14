@@ -32,14 +32,6 @@
     .recent-entry.active .recent-title { color:#ffffff; }
     .recent-meta { font-size:11px; color:#8ea8c8; margin-top:2px; }
     .recent-entry.active .recent-meta { color:#c7dcff; }
-    .status-list, .chat-list { display:flex; flex-direction:column; gap:8px; font-size:12px; color:#c8d4ec; }
-    .status-row { padding:6px 8px; border:1px solid #1a2130; border-radius:8px; background:#0b0f17; }
-    .status-title { font-weight:600; color:#e8f1ff; }
-    .status-meta { font-size:11px; color:#8ea8c8; margin-top:2px; }
-    .chat-entry { padding:8px 10px; border-radius:8px; border:1px solid #1a2130; background:#0e131d; }
-    .chat-text { font-size:12px; color:#f1f5ff; margin-bottom:4px; }
-    .chat-meta { font-size:11px; color:#91a7c5; }
-    .empty-state { font-size:12px; color:#5f6c80; }
     #map .leaflet-interactive:focus { outline: none; }
   </style>
 
@@ -85,20 +77,6 @@
         <div style="height:8px"></div>
         <label>Operator</label>
         <select id="operSel" class="select"><option value="">All</option></select>
-      </div>
-
-      <div class="box">
-        <h3>Station status</h3>
-        <div id="stationStatusList" class="status-list">
-          <div class="empty-state">No status updates yet.</div>
-        </div>
-      </div>
-
-      <div class="box">
-        <h3>Chat</h3>
-        <div id="chatList" class="chat-list">
-          <div class="empty-state">No chat messages yet.</div>
-        </div>
       </div>
 
       <div class="box">

@@ -1,30 +1,12 @@
 # N3FJP TCP server location
 N3FJP_HOST: "192.168.1.123"
 N3FJP_PORT: 1100
-N3FJP_API_PORT: 1100
-N3FJP_STATUS_PORT: 1000
-ENABLE_API_PORT: true
-ENABLE_STATUS_PORT: true
-ADDON_STATUS_ENDPOINTS:
-  # Example:
-  #   GOTA:
-  #     host: "192.168.1.150"
-  #     port: 1000
 
 # Behavior
 WFD_MODE: true                 # prefer section centroids when available
 PREFER_SECTION_ALWAYS: false   # force all to section centroids if true
 TTL_SECONDS: 600               # how long a path persists (s)
 HEARTBEAT_SECONDS: 5           # how often to ping APIVER for liveness
-
-# Station identity / optional remote origins
-PRIMARY_STATION_NAME: "Run 1"
-STATION_LOCATIONS:
-  "Run 1":
-    grid: "FN31pr"
-  "GOTA":
-    lat: 34.932
-    lon: -81.025
 
 # QRZ lookup (optional; can also be set via environment variables)
 QRZ_USERNAME: ""
