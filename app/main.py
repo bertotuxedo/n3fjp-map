@@ -82,6 +82,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 N3FJP_HOST = cfg_get("N3FJP_HOST", "127.0.0.1")
 N3FJP_PORT = cfg_get("N3FJP_PORT", 1100)
 
+# Added: secondary N3FJP connection on port 1000 (configurable)
+SECONDARY_HOST = cfg_get("SECONDARY_HOST", N3FJP_HOST)
+SECONDARY_PORT = cfg_get("SECONDARY_PORT", 1000)
+
+N3FJP_CONNECTIONS: List[Dict[str, Any]] = [
+    {"name": "primary", "host": N3FJP_HOST, "port": N3FJP_PORT},
+]
+if SECONDARY_HOST:
+    N3FJP_CONNECTIONS.append({"name": "secondary", "host": SECONDARY_HOST, "port": SECONDARY_PORT})
+
 WFD_MODE = cfg_get("WFD_MODE", False)
 PREFER_SECTION_ALWAYS = cfg_get("PREFER_SECTION_ALWAYS", False)
 TTL_SECONDS = cfg_get("TTL_SECONDS", 600)
@@ -225,6 +235,7 @@ class Hub:
             "program": None,
             "last_raw": None,
         }
+        self.connection_states: Dict[str, bool] = {}
         self.recent_raw: Deque[str] = deque(maxlen=100)
         self.recent_draw: Deque[Tuple[str, str, str, float]] = deque(maxlen=128)  # (call, band, mode, ts)
         self.recent_paths: Deque[Dict[str, Any]] = deque(maxlen=150)
@@ -233,6 +244,8 @@ class Hub:
         self.operators_seen: Set[str] = set()
         self.sections_worked: Set[str] = set()
         self.countries_worked: Set[str] = set()
+        self.station_status: Dict[str, Dict[str, Any]] = {}
+        self.chat_messages: Deque[Dict[str, Any]] = deque(maxlen=200)
         # metrics
         self.metrics = {
             "frames_parsed_total": 0,
@@ -259,6 +272,30 @@ class Hub:
     def disconnect(self, ws: WebSocket):
         self.clients.discard(ws)
         self.metrics["ws_clients_gauge"] = len(self.clients)
+
+    def update_connection_state(self, name: str, connected: bool, error: Optional[str] = None):
+        now = time.time()
+        self.connection_states[name] = connected
+        if connected:
+            self.state["last_connect_ts"] = now
+            self.state["last_error"] = None
+        else:
+            self.state["last_disconnect_ts"] = now
+            if error:
+                self.state["last_error"] = error
+        self.state["connected"] = any(self.connection_states.values())
+        if not self.state["connected"] and not error:
+            self.state["last_error"] = None
+
+    def store_station_status(self, station: str, payload: Dict[str, Any]):
+        if not station:
+            return
+        self.station_status[station] = payload
+
+    def store_chat_message(self, payload: Dict[str, Any]):
+        if not payload:
+            return
+        self.chat_messages.append(payload)
 
     async def broadcast(self, payload: Dict[str, Any]):
         dead = []
@@ -495,6 +532,46 @@ def first_tag(text: str, *names: str) -> Optional[str]:
             return v
     return None
 
+def parse_station_status_record(rec: str, source: str) -> Optional[Dict[str, Any]]:
+    rec_upper = rec.upper()
+    if "STATIONSTATUS" not in rec_upper:
+        return None
+    station = tag(rec, "STATION") or tag(rec, "CALL") or tag(rec, "OPERATOR")
+    if not station:
+        return None
+    payload: Dict[str, Any] = {
+        "station": station,
+        "system": tag(rec, "SYSTEM"),
+        "band": tag(rec, "BAND"),
+        "mode": tag(rec, "MODE") or tag(rec, "MODETEST"),
+        "status": tag(rec, "STATUS") or tag(rec, "STATE"),
+        "raw": rec,
+        "source": source,
+        "timestamp": time.time(),
+    }
+    # remove empty fields
+    return {k: v for k, v in payload.items() if v not in (None, "")}
+
+def parse_chat_message_record(rec: str, source: str) -> Optional[Dict[str, Any]]:
+    rec_upper = rec.upper()
+    if "<CHAT" not in rec_upper and "CHATMESSAGE" not in rec_upper:
+        return None
+    message = tag(rec, "MESSAGE") or tag(rec, "CHAT") or tag(rec, "TEXT")
+    if not message:
+        return None
+    payload: Dict[str, Any] = {
+        "message": message,
+        "from": tag(rec, "FROM") or tag(rec, "CALL") or tag(rec, "OPERATOR"),
+        "to": tag(rec, "TO") or tag(rec, "TARGET"),
+        "raw": rec,
+        "source": source,
+        "timestamp": time.time(),
+    }
+    channel = tag(rec, "CHANNEL") or tag(rec, "ROOM")
+    if channel:
+        payload["channel"] = channel
+    return {k: v for k, v in payload.items() if v not in (None, "")}
+
 def parse_lon_west_positive(s: Optional[str]) -> Optional[float]:
     if s is None or s == "":
         return None
@@ -615,15 +692,21 @@ async def _heartbeat(writer: asyncio.StreamWriter):
         logging.info(f"Heartbeat ended: {e}")
 
 # ---------- N3FJP TCP client task ----------
-async def n3fjp_client():
+async def n3fjp_client(conn: Dict[str, Any]):
     await asyncio.sleep(1)
+    name = conn.get("name", "primary")
+    host = conn.get("host", N3FJP_HOST)
+    port = int(conn.get("port", N3FJP_PORT))
     while True:
+        reader: Optional[asyncio.StreamReader] = None
+        writer: Optional[asyncio.StreamWriter] = None
+        hb_task: Optional[asyncio.Task] = None
         try:
-            logging.info(f"Connecting to N3FJP at {N3FJP_HOST}:{N3FJP_PORT} ...")
-            reader, writer = await asyncio.open_connection(N3FJP_HOST, N3FJP_PORT)
-            hub.state.update(connected=True, last_connect_ts=time.time(), last_error=None)
+            logging.info(f"Connecting to N3FJP ({name}) at {host}:{port} ...")
+            reader, writer = await asyncio.open_connection(host, port)
+            hub.update_connection_state(name, True)
             await hub.broadcast({"type": "status", "data": hub.compose_status()})
-            logging.info("Connected to N3FJP.")
+            logging.info(f"Connected to N3FJP ({name}).")
 
             # bootstrap
             await _send(writer, "<CMD><APIVER></CMD>")
@@ -653,6 +736,18 @@ async def n3fjp_client():
                     hub.state["last_raw"] = rec
                     hub.recent_raw.append(rec)
                     recU = rec.upper()
+
+                    # Added: capture station status frames from any connection
+                    station_status = parse_station_status_record(rec, name)
+                    if station_status:
+                        hub.store_station_status(station_status.get("station"), station_status)
+                        continue
+
+                    # Added: capture chat messages without altering map behavior
+                    chat_message = parse_chat_message_record(rec, name)
+                    if chat_message:
+                        hub.store_chat_message(chat_message)
+                        continue
 
                     # Version/Program
                     if "APIVERRESPONSE" in recU:
@@ -788,22 +883,37 @@ async def n3fjp_client():
                         continue
 
         except asyncio.CancelledError:
-            logging.warning("n3fjp_client task cancelled")
+            logging.warning(f"n3fjp_client task cancelled ({name})")
+            hub.update_connection_state(name, False)
+            await hub.broadcast({"type": "status", "data": hub.compose_status()})
             raise
         except Exception as e:
-            logging.exception("N3FJP connection loop crashed")
-            hub.state.update(connected=False, last_disconnect_ts=time.time(), last_error=str(e))
+            logging.exception(f"N3FJP connection loop crashed ({name})")
+            hub.update_connection_state(name, False, str(e))
             await hub.broadcast({"type": "status", "data": hub.compose_status()})
             await asyncio.sleep(2)
+        finally:
+            if hb_task:
+                hb_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await hb_task
+            if writer:
+                with contextlib.suppress(Exception):
+                    writer.close()
+                    await writer.wait_closed()
 
 @app.on_event("startup")
 async def startup_event():
-    app.state.n3fjp_task = asyncio.create_task(n3fjp_client())
+    app.state.n3fjp_tasks: List[asyncio.Task] = []
+    for conn in N3FJP_CONNECTIONS:
+        task = asyncio.create_task(n3fjp_client(conn))
+        app.state.n3fjp_tasks.append(task)
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    t = getattr(app.state, "n3fjp_task", None)
-    if t and not t.done():
-        t.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await t
+    tasks = getattr(app.state, "n3fjp_tasks", [])
+    for t in tasks:
+        if t and not t.done():
+            t.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
