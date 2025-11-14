@@ -15,6 +15,8 @@ const operSel    = document.getElementById('operSel');
 const bannerText = document.getElementById('bannerText');
 const btnMap     = document.getElementById('btnMap');
 const btnGlobe   = document.getElementById('btnGlobe');
+const stationStatusList = document.getElementById('stationStatusList');
+const chatList    = document.getElementById('chatList');
 
 const BAND_STYLE = {
   "160":"#6b4e16","80":"#8b4513","60":"#b5651d","40":"#1e90ff","30":"#4682b4",
@@ -135,6 +137,83 @@ function updateOriginSummary(){
   originTxt.textContent = parts.join(' • ');
 }
 
+function renderStationStatusList(){
+  if (!stationStatusList) return;
+  stationStatusList.innerHTML = '';
+  const entries = Array.from(stationOrigins.values())
+    .sort((a,b)=>(b.last_seen||0)-(a.last_seen||0));
+  if (!entries.length){
+    const empty=document.createElement('div');
+    empty.className='empty-state';
+    empty.textContent='No status updates yet.';
+    stationStatusList.appendChild(empty);
+    return;
+  }
+  entries.forEach(info => {
+    const row=document.createElement('div');
+    row.className='status-row';
+    const title=document.createElement('div');
+    title.className='status-title';
+    title.textContent=info.name || 'Station';
+    const meta=document.createElement('div');
+    meta.className='status-meta';
+    const metaParts=[];
+    if (info.band) metaParts.push(`${info.band}m`);
+    if (info.mode) metaParts.push(info.mode.toUpperCase());
+    if (info.status) metaParts.push(info.status);
+    if (info.operator) metaParts.push(info.operator);
+    const grid = info.grid || formatLatLon(info);
+    if (grid) metaParts.push(grid);
+    const ts = info.last_seen ? new Date(info.last_seen*1000).toLocaleTimeString() : null;
+    if (ts) metaParts.push(`Updated ${ts}`);
+    meta.textContent = metaParts.filter(Boolean).join(' • ') || 'No activity reported yet.';
+    row.appendChild(title);
+    row.appendChild(meta);
+    stationStatusList.appendChild(row);
+  });
+}
+
+function renderChatMessages(){
+  if (!chatList) return;
+  chatList.innerHTML='';
+  const entries = Array.from(stationOrigins.values())
+    .filter(info => (info.message || '').trim())
+    .sort((a,b)=>(b.last_seen||0)-(a.last_seen||0))
+    .slice(0, 20);
+  if (!entries.length){
+    const empty=document.createElement('div');
+    empty.className='empty-state';
+    empty.textContent='No chat messages yet.';
+    chatList.appendChild(empty);
+    return;
+  }
+  entries.forEach(info => {
+    const entry=document.createElement('div');
+    entry.className='chat-entry';
+    const text=document.createElement('div');
+    text.className='chat-text';
+    const message=(info.message || '').trim();
+    text.textContent=message;
+    const meta=document.createElement('div');
+    meta.className='chat-meta';
+    const metaParts=[info.name || 'Station'];
+    if (info.band) metaParts.push(`${info.band}m`);
+    if (info.mode) metaParts.push(info.mode.toUpperCase());
+    if (info.status) metaParts.push(info.status);
+    const ts = info.last_seen ? new Date(info.last_seen*1000).toLocaleTimeString() : null;
+    if (ts) metaParts.push(ts);
+    meta.textContent=metaParts.filter(Boolean).join(' • ');
+    entry.appendChild(text);
+    entry.appendChild(meta);
+    chatList.appendChild(entry);
+  });
+}
+
+function refreshStationPanels(){
+  renderStationStatusList();
+  renderChatMessages();
+}
+
 function upsertStationMarker(info){
   if (!info || !Number.isFinite(info.lat) || !Number.isFinite(info.lon)) return;
   let marker = stationOriginMarkers.get(info.key);
@@ -173,6 +252,7 @@ function registerStationOrigin(entry){
   stationOrigins.set(info.key, info);
   upsertStationMarker(info);
   updateOriginSummary();
+  refreshStationPanels();
 }
 
 function applyStationOriginList(list){
@@ -194,6 +274,7 @@ function applyStationOriginList(list){
     }
   });
   updateOriginSummary();
+  refreshStationPanels();
 }
 
 function formatFromContact(contact){
