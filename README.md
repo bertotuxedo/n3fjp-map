@@ -21,11 +21,16 @@ Real-time map and globe visualization for stations logging contacts with the N3F
    cd n3fjp-map
    ```
 2. Adjust `config/config.yaml` for your station (see [Configuration](#configuration)).
-3. Launch the stack:
+3. Copy `.env.example` to `.env` and fill in your connection and QRZ details:
+   ```bash
+   cp .env.example .env
+   # then edit .env with your values
+   ```
+4. Launch the stack:
    ```bash
    docker compose up --build -d
    ```
-4. Open the UI at `http://<host>:8080`.
+5. Open the UI at `http://<host>:8080`.
 
 The compose file mounts `config/config.yaml` into the container at `/config/config.yaml` and exports port `8080` from the FastAPI app.
 

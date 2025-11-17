@@ -9,5 +9,7 @@ services:
     volumes:
       - ./config:/config:ro
       - ./app/static:/app/static
+    env_file:
+      - .env
     environment:
       - CONFIG_FILE=/config/config.yaml
