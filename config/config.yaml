@@ -1,10 +1,11 @@
 # N3FJP TCP server locations
-N3FJP_HOST: "192.168.1.123"   # primary/origin connection (port 1100)
-N3FJP_PORT: 1100
+# Primary/origin connection (port 1100)
+API_HOST: "192.168.1.123"
+API_PORT: 1100
 
-# Added: secondary N3FJP connection on port 1000
-SECONDARY_HOST: "192.168.1.180"
-SECONDARY_PORT: 1000
+# BAMS / status / chat feed (port 1000 on same host)
+BAMS_HOST: "192.168.1.123"
+BAMS_PORT: 1000
 
 # Behavior
 WFD_MODE: true                 # prefer section centroids when available
