@@ -1,11 +1,11 @@
 # N3FJP TCP server locations (values expand environment variables when present)
 # Primary/origin connection (port 1100)
-API_HOST: "${API_HOST:-192.168.1.123}"
-API_PORT: ${API_PORT:-1100}
+API_HOST: "${API_HOST}"
+API_PORT: ${API_PORT}
 
 # BAMS / status / chat feed (defaults to API_HOST on port 1000)
-BAMS_HOST: "${BAMS_HOST:-${API_HOST:-192.168.1.123}}"
-BAMS_PORT: ${BAMS_PORT:-1000}
+BAMS_HOST: "${BAMS_HOST}"
+BAMS_PORT: ${BAMS_PORT}
 
 # Behavior
 WFD_MODE: true                 # prefer section centroids when available
@@ -16,7 +16,7 @@ HEARTBEAT_SECONDS: 5           # how often to ping APIVER for liveness
 # QRZ lookup (optional; can also be set via environment variables)
 QRZ_USERNAME: "${QRZ_USERNAME:-}"
 QRZ_PASSWORD: "${QRZ_PASSWORD:-}"
-QRZ_AGENT: "n3fjp-map"
+QRZ_AGENT: "${QRZ_AGENT}"
 
 # Optional server-side filters (comma-separated)
 # Example: "20,40,80"

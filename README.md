@@ -43,12 +43,12 @@ The primary configuration lives in `config/config.yaml` (mounted read-only by Do
 
 ```yaml
 # N3FJP TCP server locations
-API_HOST: "${API_HOST:-192.168.1.123}"      # primary/origin connection (port 1100)
-API_PORT: ${API_PORT:-1100}
+API_HOST: "${API_HOST}"      # primary/origin connection (port 1100)
+API_PORT: ${API_PORT}
 
 # BAMS / status / chat feed (defaults to API_HOST if omitted)
-BAMS_HOST: "${BAMS_HOST:-${API_HOST:-192.168.1.123}}"
-BAMS_PORT: ${BAMS_PORT:-1000}
+BAMS_HOST: "${BAMS_HOST}"
+BAMS_PORT: ${BAMS_PORT}
 
 # Behavior
 WFD_MODE: true                 # prefer ARRL section centroids when available
@@ -59,7 +59,7 @@ HEARTBEAT_SECONDS: 5           # poll interval for liveness
 # QRZ lookup (optional)
 QRZ_USERNAME: "${QRZ_USERNAME:-}"
 QRZ_PASSWORD: "${QRZ_PASSWORD:-}"
-QRZ_AGENT: "n3fjp-map"
+QRZ_AGENT: "${QRZ_AGENT}"
 
 # Optional server-side filters (comma-separated)
 BAND_FILTER: ""               # e.g. "20,40,80"
@@ -73,7 +73,7 @@ You can override most configuration keys using environment variables (matching t
 
 - `API_HOST`, `API_PORT` — where to reach the main N3FJP TCP API (contacts/origin).
 - `BAMS_HOST`, `BAMS_PORT` — where to reach the BAMS/status feed (defaults to `API_HOST:1000`).
-- `QRZ_USERNAME`, `QRZ_PASSWORD`, `QRZ_AGENT` — credentials for QRZ.com lookups (also referenced in `config/config.yaml`).
+- `QRZ_USERNAME`, `QRZ_PASSWORD`, `QRZ_AGENT` — credentials for QRZ.com lookups.
 - `TTL_SECONDS`, `BAND_FILTER`, `MODE_FILTER` — control visibility and filtering.
 
 For local overrides without editing the compose file, create a `.env` file and set your variables before running `docker compose`.
