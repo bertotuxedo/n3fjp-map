@@ -44,6 +44,26 @@ def load_dotenv(path: str = ".env"):
 load_dotenv()
 
 # ---------- Optional YAML config ----------
+def _expand_env_vars(content: str) -> str:
+    """Expand ${VAR} or ${VAR:-default} references using the current environment."""
+
+    pattern = re.compile(r"\$\{([^:{}]+)(:-([^}]*))?\}")
+
+    def replace(match: re.Match) -> str:
+        var = match.group(1)
+        default = match.group(3) or ""
+        return os.environ.get(var, default)
+
+    expanded = content
+    # Repeat until stable to allow nested defaults, e.g. ${BAMS_HOST:-${API_HOST:-127.0.0.1}}
+    while True:
+        new_expanded = pattern.sub(replace, expanded)
+        if new_expanded == expanded:
+            break
+        expanded = new_expanded
+    return expanded
+
+
 def load_yaml_config():
     path = os.getenv("CONFIG_FILE")
     if not path:
@@ -51,7 +71,8 @@ def load_yaml_config():
     try:
         import yaml  # requires PyYAML in requirements.txt
         with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            content = _expand_env_vars(f.read())
+        return yaml.safe_load(content) or {}
     except Exception as e:
         logging.warning(f"Could not load CONFIG_FILE {path}: {e}")
         return {}

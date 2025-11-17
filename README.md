@@ -39,16 +39,16 @@ docker compose down
 ```
 
 ## Configuration
-The primary configuration lives in `config/config.yaml` (mounted read-only by Docker). Example values:
+The primary configuration lives in `config/config.yaml` (mounted read-only by Docker). The file expands environment variables (including those in `.env`) before loading, so you can reference shared host/port credentials without duplication. Example values:
 
 ```yaml
 # N3FJP TCP server locations
-API_HOST: "192.168.1.123"      # primary/origin connection (port 1100)
-API_PORT: 1100
+API_HOST: "${API_HOST}"      # primary/origin connection (port 1100)
+API_PORT: ${API_PORT}
 
 # BAMS / status / chat feed (defaults to API_HOST if omitted)
-BAMS_HOST: "192.168.1.123"
-BAMS_PORT: 1000
+BAMS_HOST: "${BAMS_HOST}"
+BAMS_PORT: ${BAMS_PORT}
 
 # Behavior
 WFD_MODE: true                 # prefer ARRL section centroids when available
@@ -57,16 +57,16 @@ TTL_SECONDS: 600               # how long a path persists (seconds)
 HEARTBEAT_SECONDS: 5           # poll interval for liveness
 
 # QRZ lookup (optional)
-QRZ_USERNAME: ""
-QRZ_PASSWORD: ""
-QRZ_AGENT: "n3fjp-map"
+QRZ_USERNAME: "${QRZ_USERNAME:-}"
+QRZ_PASSWORD: "${QRZ_PASSWORD:-}"
+QRZ_AGENT: "${QRZ_AGENT}"
 
 # Optional server-side filters (comma-separated)
 BAND_FILTER: ""               # e.g. "20,40,80"
 MODE_FILTER: ""               # e.g. "PH,CW"
 ```
 
-Configuration values in the YAML file take precedence over environment variables. After editing the file, restart the container to apply the changes.
+Environment variables set in `.env` or your shell are expanded into the YAML; literal YAML values still win if you replace a placeholder with a concrete value. After editing the file, restart the container to apply the changes.
 
 ### Environment variables
 You can override most configuration keys using environment variables (matching the YAML keys). The compose file sets `CONFIG_FILE=/config/config.yaml` so the application loads your YAML configuration automatically. Additional useful variables include:
