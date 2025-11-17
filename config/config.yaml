@@ -3,7 +3,7 @@ N3FJP_HOST: "192.168.1.123"   # primary/origin connection (port 1100)
 N3FJP_PORT: 1100
 
 # Added: secondary N3FJP connection on port 1000
-SECONDARY_HOST: "192.168.1.123"
+SECONDARY_HOST: "192.168.1.180"
 SECONDARY_PORT: 1000
 
 # Behavior

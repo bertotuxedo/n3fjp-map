@@ -70,20 +70,6 @@ You can override most configuration keys using environment variables (matching t
 - `QRZ_USERNAME`, `QRZ_PASSWORD`, `QRZ_AGENT` — credentials for QRZ.com lookups.
 - `TTL_SECONDS`, `BAND_FILTER`, `MODE_FILTER` — control visibility and filtering.
 
-### Bidirectional forwarding between ports 1000 and 1001
-The service can listen to two N3FJP TCP endpoints simultaneously (default ports `1000` and `1001`). Frames from one port are
-processed for the map and mirrored to the other port in their original `<CMD>` envelope, providing a simple relay between
-stations while preserving the app's visualization features.
-
-Configuration keys:
-
-```yaml
-ENABLE_PORT_BRIDGE: true     # enable forwarding in both directions
-BRIDGE_HOST: "192.168.1.123"  # host to reach for the bridged ports (defaults to SECONDARY_HOST or N3FJP_HOST)
-BRIDGE_PORT_A: 1000
-BRIDGE_PORT_B: 1001
-```
-
 For local overrides without editing the compose file, create a `.env` file and set your variables before running `docker compose`.
 
 ## Local development run (without Docker)
