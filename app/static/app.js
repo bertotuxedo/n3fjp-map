@@ -978,7 +978,10 @@ function updateOperators(list){
   applyFiltersToSegments();
 }
 
+let wsConnected = false;
+
 async function refreshStatus(){
+  if (wsConnected) return; // avoid redundant polling when WS is healthy
   try{
     const s=await fetch('/status').then(r=>r.json());
     if (s.connected){ connPill.textContent='Connected'; connPill.className='pill ok'; }
@@ -1006,8 +1009,8 @@ refreshStatus(); setInterval(refreshStatus, 5000);
 
 const proto = location.protocol === 'https:' ? 'wss' : 'ws';
 const ws = new WebSocket(`${proto}://${location.host}/ws`);
-ws.onopen = () => { connPill.textContent='Connected'; connPill.className='pill ok'; };
-ws.onclose = () => { connPill.textContent='Disconnected'; connPill.className='pill bad'; };
+ws.onopen = () => { wsConnected = true; connPill.textContent='Connected'; connPill.className='pill ok'; };
+ws.onclose = () => { wsConnected = false; connPill.textContent='Disconnected'; connPill.className='pill bad'; refreshStatus(); };
 ws.onmessage = (ev)=>{
   try{
     const msg=JSON.parse(ev.data);
