@@ -92,6 +92,23 @@ N3FJP_CONNECTIONS: List[Dict[str, Any]] = [
 if SECONDARY_HOST:
     N3FJP_CONNECTIONS.append({"name": "secondary", "host": SECONDARY_HOST, "port": SECONDARY_PORT})
 
+# Bidirectional forwarding between two TCP ports (default: 1000 <-> 1001)
+BRIDGE_HOST = cfg_get("BRIDGE_HOST", SECONDARY_HOST or N3FJP_HOST)
+BRIDGE_PORT_A = cfg_get("BRIDGE_PORT_A", 1000)
+BRIDGE_PORT_B = cfg_get("BRIDGE_PORT_B", 1001)
+ENABLE_PORT_BRIDGE = cfg_get("ENABLE_PORT_BRIDGE", True)
+PORT_FORWARD_RULES: Dict[int, int] = {}
+if ENABLE_PORT_BRIDGE and BRIDGE_PORT_A and BRIDGE_PORT_B:
+    PORT_FORWARD_RULES[BRIDGE_PORT_A] = BRIDGE_PORT_B
+    PORT_FORWARD_RULES[BRIDGE_PORT_B] = BRIDGE_PORT_A
+
+existing_ports = {int(conn.get("port", 0)) for conn in N3FJP_CONNECTIONS}
+if ENABLE_PORT_BRIDGE and BRIDGE_HOST:
+    for p in (BRIDGE_PORT_A, BRIDGE_PORT_B):
+        if p and p not in existing_ports:
+            N3FJP_CONNECTIONS.append({"name": f"bridge_{p}", "host": BRIDGE_HOST, "port": p})
+            existing_ports.add(p)
+
 WFD_MODE = cfg_get("WFD_MODE", False)
 PREFER_SECTION_ALWAYS = cfg_get("PREFER_SECTION_ALWAYS", False)
 TTL_SECONDS = cfg_get("TTL_SECONDS", 600)
@@ -691,6 +708,41 @@ async def _heartbeat(writer: asyncio.StreamWriter):
     except Exception as e:
         logging.info(f"Heartbeat ended: {e}")
 
+
+connection_lock = asyncio.Lock()
+connection_writers: Dict[str, asyncio.StreamWriter] = {}
+connection_ports: Dict[str, int] = {}
+
+
+async def register_writer(name: str, port: int, writer: asyncio.StreamWriter):
+    async with connection_lock:
+        connection_writers[name] = writer
+        connection_ports[name] = port
+
+
+async def unregister_writer(name: str):
+    async with connection_lock:
+        connection_writers.pop(name, None)
+        connection_ports.pop(name, None)
+
+
+async def forward_raw_frame(source_name: str, source_port: int, rec: str):
+    target_port = PORT_FORWARD_RULES.get(source_port)
+    if target_port is None:
+        return
+    async with connection_lock:
+        target_name = next(
+            (n for n, p in connection_ports.items() if p == target_port and n != source_name),
+            None,
+        )
+        target_writer = connection_writers.get(target_name) if target_name else None
+    if not target_writer:
+        return
+    try:
+        await _send(target_writer, f"<CMD>{rec}</CMD>")
+    except Exception as e:
+        logging.warning(f"Failed to forward frame from {source_port} to {target_port}: {e}")
+
 # ---------- N3FJP TCP client task ----------
 async def n3fjp_client(conn: Dict[str, Any]):
     await asyncio.sleep(1)
@@ -704,6 +756,7 @@ async def n3fjp_client(conn: Dict[str, Any]):
         try:
             logging.info(f"Connecting to N3FJP ({name}) at {host}:{port} ...")
             reader, writer = await asyncio.open_connection(host, port)
+            await register_writer(name, port, writer)
             hub.update_connection_state(name, True)
             await hub.broadcast({"type": "status", "data": hub.compose_status()})
             logging.info(f"Connected to N3FJP ({name}).")
@@ -736,151 +789,153 @@ async def n3fjp_client(conn: Dict[str, Any]):
                     hub.state["last_raw"] = rec
                     hub.recent_raw.append(rec)
                     recU = rec.upper()
-
-                    # Added: capture station status frames from any connection
-                    station_status = parse_station_status_record(rec, name)
-                    if station_status:
-                        hub.store_station_status(station_status.get("station"), station_status)
-                        continue
-
-                    # Added: capture chat messages without altering map behavior
-                    chat_message = parse_chat_message_record(rec, name)
-                    if chat_message:
-                        hub.store_chat_message(chat_message)
-                        continue
-
-                    # Version/Program
-                    if "APIVERRESPONSE" in recU:
-                        hub.state["apiver"] = tag(rec, "APIVER")
-                        await hub.broadcast({"type": "status", "data": hub.compose_status()})
-                        continue
-                    if "PROGRAMRESPONSE" in recU:
-                        pgm = tag(rec, "PGM"); ver = tag(rec, "VER")
-                        hub.state["program"] = f"{pgm or ''} {ver or ''}".strip()
-                        await hub.broadcast({"type": "status", "data": hub.compose_status()})
-                        continue
-
-                    # Origin from OPINFO (GRID preferred)
-                    if "OPINFORESPONSE" in recU:
-                        grid = tag(rec, "GRID")
-                        lat_s = tag(rec, "LAT")
-                        lon_s = first_tag(rec, "LON", "LONG")
-                        origin = None
-                        if grid:
-                            origin = latlon_from_maidenhead(grid)
-                            if origin: origin["grid"] = grid
-                        elif lat_s and lon_s:
-                            lat = float(lat_s); lon = parse_lon_west_positive(lon_s)
-                            if lon is not None:
-                                origin = {"lat": lat, "lon": lon}
-                                origin["grid"] = maidenhead_from_latlon(lat, lon)
-                        if origin:
-                            hub.origin = origin
-                            await hub.broadcast({"type":"origin","data":hub.origin})
-                            await hub.broadcast({"type":"status","data":hub.compose_status()})
-                        continue
-
-                    # Draw ONLY on ENTEREVENT (submit)
-                    if "ENTEREVENT" in recU:
-                        await refresh_origin_from_opinfo()
-
-                        call = tag(rec, "CALL")
-                        band = tag(rec, "BAND")
-                        mode = (tag(rec, "MODE") or tag(rec, "MODETEST") or "").upper()
-                        sect = (first_tag(rec, "SECTION", "ARRL_SECT") or "").upper()
-                        oper = tag(rec, "OPERATOR") or tag(rec, "MYCALL") or ""
-                        country = tag(rec, "COUNTRY") or ""
-
-                        # track operators seen
-                        if oper:
-                            if oper not in hub.operators_seen:
-                                hub.operators_seen.add(oper)
-                                await hub.broadcast({"type":"operators","data":sorted(hub.operators_seen)})
-
-                        # destination selection
-                        tlat_s = tag(rec, "LAT")
-                        tlon_s = first_tag(rec, "LON", "LONG")
-                        dest = None
-                        base_meta = {
-                            "call": call,
-                            "band": band,
-                            "mode": mode,
-                            "section": sect,
-                            "operator": oper,
-                        }
-                        if country:
-                            base_meta["country"] = country
-                        call_key = (call or "").upper()
-
-                        if (WFD_MODE or PREFER_SECTION_ALWAYS) and sect:
-                            sec = section_to_latlon(sect)
-                            if sec:
-                                dest = {"lat": sec["lat"], "lon": sec["lon"], "grid": None}
-                        if not dest and tlat_s and tlon_s:
-                            lat = float(tlat_s); lon = parse_lon_west_positive(tlon_s)
-                            if lon is not None:
-                                dest = {"lat": lat, "lon": lon, "grid": None}
-
-                        if not dest and call:
-                            dx_flag = parse_bool(tag(rec, "DX"))
-                            if dx_flag is None:
-                                dx_flag = bool(country and "USA" not in country.upper() and "UNITED STATES" not in country.upper())
-                            if dx_flag:
-                                qrz_result = await qrz_client.lookup(call)
-                                if qrz_result:
-                                    qrz_country = qrz_result.get("country")
-                                    if qrz_country:
-                                        base_meta["country"] = qrz_country
-                                    qrz_dest = qrz_result.get("dest")
-                                    if qrz_dest and qrz_dest.get("lat") is not None and qrz_dest.get("lon") is not None:
-                                        dest = qrz_dest
-                                    if not dest:
-                                        centroid = country_centroid(base_meta.get("country") or qrz_country)
-                                        if centroid:
-                                            dest = centroid
-
-                        if not dest and base_meta.get("country"):
-                            centroid = country_centroid(base_meta.get("country"))
-                            if centroid:
-                                dest = centroid
-
-                        if dest:
-                            hub.pending_meta.pop(call_key, None)
-                            now = time.time()
-                            if now - last_emit > 0.01:
-                                await hub.emit_path(dest, base_meta, TTL_SECONDS, origin_override=copy.deepcopy(hub.origin))
-                                last_emit = now
+                    try:
+                        # Added: capture station status frames from any connection
+                        station_status = parse_station_status_record(rec, name)
+                        if station_status:
+                            hub.store_station_status(station_status.get("station"), station_status)
                             continue
 
-                        if call:
-                            hub.pending_meta[call_key] = {
-                                "meta": copy.deepcopy(base_meta),
-                                "origin": copy.deepcopy(hub.origin),
+                        # Added: capture chat messages without altering map behavior
+                        chat_message = parse_chat_message_record(rec, name)
+                        if chat_message:
+                            hub.store_chat_message(chat_message)
+                            continue
+
+                        # Version/Program
+                        if "APIVERRESPONSE" in recU:
+                            hub.state["apiver"] = tag(rec, "APIVER")
+                            await hub.broadcast({"type": "status", "data": hub.compose_status()})
+                            continue
+                        if "PROGRAMRESPONSE" in recU:
+                            pgm = tag(rec, "PGM"); ver = tag(rec, "VER")
+                            hub.state["program"] = f"{pgm or ''} {ver or ''}".strip()
+                            await hub.broadcast({"type": "status", "data": hub.compose_status()})
+                            continue
+
+                        # Origin from OPINFO (GRID preferred)
+                        if "OPINFORESPONSE" in recU:
+                            grid = tag(rec, "GRID")
+                            lat_s = tag(rec, "LAT")
+                            lon_s = first_tag(rec, "LON", "LONG")
+                            origin = None
+                            if grid:
+                                origin = latlon_from_maidenhead(grid)
+                                if origin: origin["grid"] = grid
+                            elif lat_s and lon_s:
+                                lat = float(lat_s); lon = parse_lon_west_positive(lon_s)
+                                if lon is not None:
+                                    origin = {"lat": lat, "lon": lon}
+                                    origin["grid"] = maidenhead_from_latlon(lat, lon)
+                            if origin:
+                                hub.origin = origin
+                                await hub.broadcast({"type":"origin","data":hub.origin})
+                                await hub.broadcast({"type":"status","data":hub.compose_status()})
+                            continue
+
+                        # Draw ONLY on ENTEREVENT (submit)
+                        if "ENTEREVENT" in recU:
+                            await refresh_origin_from_opinfo()
+
+                            call = tag(rec, "CALL")
+                            band = tag(rec, "BAND")
+                            mode = (tag(rec, "MODE") or tag(rec, "MODETEST") or "").upper()
+                            sect = (first_tag(rec, "SECTION", "ARRL_SECT") or "").upper()
+                            oper = tag(rec, "OPERATOR") or tag(rec, "MYCALL") or ""
+                            country = tag(rec, "COUNTRY") or ""
+
+                            # track operators seen
+                            if oper:
+                                if oper not in hub.operators_seen:
+                                    hub.operators_seen.add(oper)
+                                    await hub.broadcast({"type":"operators","data":sorted(hub.operators_seen)})
+
+                            # destination selection
+                            tlat_s = tag(rec, "LAT")
+                            tlon_s = first_tag(rec, "LON", "LONG")
+                            dest = None
+                            base_meta = {
+                                "call": call,
+                                "band": band,
+                                "mode": mode,
+                                "section": sect,
+                                "operator": oper,
                             }
-                            await _send(writer, f"<CMD><COUNTRYLISTLOOKUP><CALL>{call}</CALL></CMD>")
+                            if country:
+                                base_meta["country"] = country
+                            call_key = (call or "").upper()
 
-                        continue
+                            if (WFD_MODE or PREFER_SECTION_ALWAYS) and sect:
+                                sec = section_to_latlon(sect)
+                                if sec:
+                                    dest = {"lat": sec["lat"], "lon": sec["lon"], "grid": None}
+                            if not dest and tlat_s and tlon_s:
+                                lat = float(tlat_s); lon = parse_lon_west_positive(tlon_s)
+                                if lon is not None:
+                                    dest = {"lat": lat, "lon": lon, "grid": None}
 
-                    # COUNTRYLISTLOOKUP fallback
-                    if "COUNTRYLISTLOOKUPRESPONSE" in recU and hub.origin["lat"] is not None:
-                        call = tag(rec, "CALL")
-                        tlat_s = tag(rec, "LAT")
-                        tlon_s = first_tag(rec, "LON", "LONG")
-                        if tlat_s and tlon_s:
-                            lat = float(tlat_s); lon = parse_lon_west_positive(tlon_s)
-                            if lon is not None:
-                                dest = {"lat": lat, "lon": lon, "grid": maidenhead_from_latlon(lat, lon)}
-                                meta_info = hub.pending_meta.pop((call or "").upper(), None)
-                                meta_payload = {"call": call}
-                                origin_override = None
-                                if meta_info:
-                                    meta_payload = meta_info.get("meta", meta_payload)
-                                    origin_override = meta_info.get("origin")
-                                country_name = tag(rec, "COUNTRY") or tag(rec, "COUNTRY_NAME")
-                                if country_name and not meta_payload.get("country"):
-                                    meta_payload["country"] = country_name
-                                await hub.emit_path(dest, meta_payload, TTL_SECONDS, origin_override=origin_override)
-                        continue
+                            if not dest and call:
+                                dx_flag = parse_bool(tag(rec, "DX"))
+                                if dx_flag is None:
+                                    dx_flag = bool(country and "USA" not in country.upper() and "UNITED STATES" not in country.upper())
+                                if dx_flag:
+                                    qrz_result = await qrz_client.lookup(call)
+                                    if qrz_result:
+                                        qrz_country = qrz_result.get("country")
+                                        if qrz_country:
+                                            base_meta["country"] = qrz_country
+                                        qrz_dest = qrz_result.get("dest")
+                                        if qrz_dest and qrz_dest.get("lat") is not None and qrz_dest.get("lon") is not None:
+                                            dest = qrz_dest
+                                        if not dest:
+                                            centroid = country_centroid(base_meta.get("country") or qrz_country)
+                                            if centroid:
+                                                dest = centroid
+
+                            if not dest and base_meta.get("country"):
+                                centroid = country_centroid(base_meta.get("country"))
+                                if centroid:
+                                    dest = centroid
+
+                            if dest:
+                                hub.pending_meta.pop(call_key, None)
+                                now = time.time()
+                                if now - last_emit > 0.01:
+                                    await hub.emit_path(dest, base_meta, TTL_SECONDS, origin_override=copy.deepcopy(hub.origin))
+                                    last_emit = now
+                                continue
+
+                            if call:
+                                hub.pending_meta[call_key] = {
+                                    "meta": copy.deepcopy(base_meta),
+                                    "origin": copy.deepcopy(hub.origin),
+                                }
+                                await _send(writer, f"<CMD><COUNTRYLISTLOOKUP><CALL>{call}</CALL></CMD>")
+
+                            continue
+
+                        # COUNTRYLISTLOOKUP fallback
+                        if "COUNTRYLISTLOOKUPRESPONSE" in recU and hub.origin["lat"] is not None:
+                            call = tag(rec, "CALL")
+                            tlat_s = tag(rec, "LAT")
+                            tlon_s = first_tag(rec, "LON", "LONG")
+                            if tlat_s and tlon_s:
+                                lat = float(tlat_s); lon = parse_lon_west_positive(tlon_s)
+                                if lon is not None:
+                                    dest = {"lat": lat, "lon": lon, "grid": maidenhead_from_latlon(lat, lon)}
+                                    meta_info = hub.pending_meta.pop((call or "").upper(), None)
+                                    meta_payload = {"call": call}
+                                    origin_override = None
+                                    if meta_info:
+                                        meta_payload = meta_info.get("meta", meta_payload)
+                                        origin_override = meta_info.get("origin")
+                                    country_name = tag(rec, "COUNTRY") or tag(rec, "COUNTRY_NAME")
+                                    if country_name and not meta_payload.get("country"):
+                                        meta_payload["country"] = country_name
+                                    await hub.emit_path(dest, meta_payload, TTL_SECONDS, origin_override=origin_override)
+                            continue
+                    finally:
+                        await forward_raw_frame(name, port, rec)
 
         except asyncio.CancelledError:
             logging.warning(f"n3fjp_client task cancelled ({name})")
@@ -897,6 +952,7 @@ async def n3fjp_client(conn: Dict[str, Any]):
                 hb_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await hb_task
+            await unregister_writer(name)
             if writer:
                 with contextlib.suppress(Exception):
                     writer.close()
