@@ -39,12 +39,16 @@ docker compose down
 ```
 
 ## Configuration
-The primary configuration lives in `config/config.yaml` (mounted read-only by Docker). Example values:
+The primary configuration lives in `config/config.yaml` (mounted read-only by Docker). The file expands environment variables (including those in `.env`) before loading, so you can reference shared host/port credentials without duplication. Example values:
 
 ```yaml
-# N3FJP TCP server location
-N3FJP_HOST: "192.168.1.123"
-N3FJP_PORT: 1100
+# N3FJP TCP server locations
+API_HOST: "${API_HOST:-192.168.1.123}"      # primary/origin connection (port 1100)
+API_PORT: ${API_PORT:-1100}
+
+# BAMS / status / chat feed (defaults to API_HOST if omitted)
+BAMS_HOST: "${BAMS_HOST:-${API_HOST:-192.168.1.123}}"
+BAMS_PORT: ${BAMS_PORT:-1000}
 
 # Behavior
 WFD_MODE: true                 # prefer ARRL section centroids when available
@@ -53,8 +57,8 @@ TTL_SECONDS: 600               # how long a path persists (seconds)
 HEARTBEAT_SECONDS: 5           # poll interval for liveness
 
 # QRZ lookup (optional)
-QRZ_USERNAME: ""
-QRZ_PASSWORD: ""
+QRZ_USERNAME: "${QRZ_USERNAME:-}"
+QRZ_PASSWORD: "${QRZ_PASSWORD:-}"
 QRZ_AGENT: "n3fjp-map"
 
 # Optional server-side filters (comma-separated)
@@ -62,12 +66,14 @@ BAND_FILTER: ""               # e.g. "20,40,80"
 MODE_FILTER: ""               # e.g. "PH,CW"
 ```
 
-Configuration values in the YAML file take precedence over environment variables. After editing the file, restart the container to apply the changes.
+Environment variables set in `.env` or your shell are expanded into the YAML; literal YAML values still win if you replace a placeholder with a concrete value. After editing the file, restart the container to apply the changes.
 
 ### Environment variables
 You can override most configuration keys using environment variables (matching the YAML keys). The compose file sets `CONFIG_FILE=/config/config.yaml` so the application loads your YAML configuration automatically. Additional useful variables include:
 
-- `QRZ_USERNAME`, `QRZ_PASSWORD`, `QRZ_AGENT` — credentials for QRZ.com lookups.
+- `API_HOST`, `API_PORT` — where to reach the main N3FJP TCP API (contacts/origin).
+- `BAMS_HOST`, `BAMS_PORT` — where to reach the BAMS/status feed (defaults to `API_HOST:1000`).
+- `QRZ_USERNAME`, `QRZ_PASSWORD`, `QRZ_AGENT` — credentials for QRZ.com lookups (also referenced in `config/config.yaml`).
 - `TTL_SECONDS`, `BAND_FILTER`, `MODE_FILTER` — control visibility and filtering.
 
 For local overrides without editing the compose file, create a `.env` file and set your variables before running `docker compose`.
@@ -92,7 +98,7 @@ For local overrides without editing the compose file, create a `.env` file and s
 - `WS /ws` – WebSocket stream used by the UI for status/origin/path updates.
 
 ## How it works
-1. On startup the FastAPI service connects to the N3FJP TCP API (`N3FJP_HOST:N3FJP_PORT`).
+1. On startup the FastAPI service connects to the N3FJP TCP API (`API_HOST:API_PORT`).
 2. It sends `<APIVER>`, `<PROGRAM>`, `<OPINFO>`, and `<SETUPDATESTATE>TRUE</SETUPDATESTATE>` to subscribe to live updates.
 3. As contacts are logged (`<ENTEREVENT>`), the server determines origin/destination grid squares or coordinates, enriches them via QRZ (when configured), and pushes path events to the browser over WebSocket.
 4. The browser animates the arcs, updates filters, and tracks section status in real time.
@@ -101,7 +107,7 @@ For local overrides without editing the compose file, create a `.env` file and s
 On the Windows host running your N3FJP logger:
 1. Open the contest logging program (e.g., Winter Field Day Contest Log).
 2. Navigate to **Settings → Application Program Interface**.
-3. Check **TCP API Enabled**, ensure the port matches `N3FJP_PORT`, and note the machine's IP for `N3FJP_HOST`.
+3. Check **TCP API Enabled**, ensure the port matches `API_PORT`, and note the machine's IP for `API_HOST`.
 
 ## QRZ.com integration
 If QRZ credentials are supplied, the app performs lookups for non-local stations to supplement grid and location data. Sessions are cached and refreshed automatically; missing or invalid credentials simply skip QRZ lookups.
