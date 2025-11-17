@@ -9,6 +9,8 @@ const lastEvt    = document.getElementById('lastEvt');
 const workedCount= document.getElementById('workedCount');
 const countriesCount = document.getElementById('countriesCount');
 const recentBox  = document.getElementById('recentBox');
+const statusList = document.getElementById('statusList');
+const messageList = document.getElementById('messageList');
 const bandSel    = document.getElementById('bandSel');
 const modeSel    = document.getElementById('modeSel');
 const operSel    = document.getElementById('operSel');
@@ -40,6 +42,8 @@ function morseDashArray(){
 const CW_DASH = morseDashArray();
 
 const recentContacts = [];
+const stationStatusEntries = new Map();
+const chatMessages = [];
 const mapSegments = new Map();
 let selectedContactId = null;
 let selectedMapHighlight = null;
@@ -95,6 +99,78 @@ function formatTimestamp(contact){
   if (!contact || !contact.timestamp) return '';
   const date = new Date(contact.timestamp * 1000);
   return date.toLocaleString();
+}
+
+function renderStatusList(){
+  if (!statusList) return;
+  const frag = document.createDocumentFragment();
+  const entries = Array.from(stationStatusEntries.entries()).sort((a,b)=>a[0].localeCompare(b[0]));
+  entries.forEach(([station, info]) => {
+    const row = document.createElement('div');
+    row.className = 'status-row';
+    const title = document.createElement('div');
+    title.className = 'status-title';
+    title.textContent = station;
+    const meta = document.createElement('div');
+    meta.className = 'status-meta';
+    const band = info?.band ? `${info.band}m` : '';
+    const mode = (info?.mode || '').toUpperCase();
+    const extra = [band, mode].filter(Boolean).join(' • ');
+    meta.textContent = extra || '—';
+    row.appendChild(title);
+    row.appendChild(meta);
+    frag.appendChild(row);
+  });
+  statusList.replaceChildren(frag);
+}
+
+function setStationStatus(data){
+  stationStatusEntries.clear();
+  if (data && typeof data === 'object'){
+    Object.entries(data).forEach(([station, info]) => stationStatusEntries.set(station, info || {}));
+  }
+  renderStatusList();
+}
+
+function renderMessageList(){
+  if (!messageList) return;
+  const frag = document.createDocumentFragment();
+  const latest = [...chatMessages].sort((a,b)=>b.timestamp-a.timestamp).slice(0, 80);
+  latest.forEach(msg => {
+    const row = document.createElement('div');
+    row.className = 'message-row';
+    const header = document.createElement('div');
+    header.className = 'message-header';
+    const from = msg.from || 'Unknown';
+    const to = msg.to ? `→ ${msg.to}` : '';
+    header.textContent = [from, to].filter(Boolean).join(' ');
+    const text = document.createElement('div');
+    text.className = 'message-text';
+    text.textContent = msg.message || msg.text || '';
+    const time = document.createElement('div');
+    time.className = 'message-time';
+    time.textContent = new Date(msg.timestamp * 1000).toLocaleTimeString();
+    row.appendChild(header);
+    row.appendChild(text);
+    row.appendChild(time);
+    frag.appendChild(row);
+  });
+  messageList.replaceChildren(frag);
+}
+
+function addChatMessage(msg){
+  if (!msg) return;
+  const ts = Number(msg.timestamp) || Date.now()/1000;
+  chatMessages.push({ ...msg, timestamp: ts });
+  chatMessages.sort((a,b)=>a.timestamp-b.timestamp);
+  while (chatMessages.length > 200) chatMessages.shift();
+  renderMessageList();
+}
+
+function setChatMessages(list){
+  chatMessages.length = 0;
+  (list || []).forEach(addChatMessage);
+  renderMessageList();
 }
 
 function registerContact(data){
@@ -922,6 +998,8 @@ async function refreshStatus(){
       s.countries_worked.forEach(grayCountry);
     }
     if (s.operators) updateOperators(s.operators);
+    if (s.station_status) setStationStatus(s.station_status);
+    if (s.chat_messages) setChatMessages(s.chat_messages);
   } catch {}
 }
 refreshStatus(); setInterval(refreshStatus, 5000);
@@ -965,6 +1043,12 @@ ws.onmessage = (ev)=>{
       grayCountry(msg.data);
     } else if (msg.type==='countries_worked'){
       (msg.data||[]).forEach(grayCountry);
+    } else if (msg.type==='station_status'){
+      setStationStatus(msg.data || {});
+    } else if (msg.type==='chat_messages'){
+      setChatMessages(msg.data || []);
+    } else if (msg.type==='chat_message'){
+      addChatMessage(msg.data);
     }
   } catch {}
 };
