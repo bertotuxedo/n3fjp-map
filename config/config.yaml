@@ -2,9 +2,10 @@
 N3FJP_HOST: "192.168.1.123"   # primary/origin connection (port 1100)
 N3FJP_PORT: 1100
 
-# Added: secondary N3FJP connection on port 1000
-SECONDARY_HOST: "192.168.1.180"
-SECONDARY_PORT: 1000
+# Added: BAMS / status / messages connection (defaults to port 1000)
+# Legacy SECONDARY_* keys are still honored by the app, but BAMS_* is preferred.
+BAMS_HOST: "192.168.1.180"
+BAMS_PORT: 1000
 
 # Behavior
 WFD_MODE: true                 # prefer section centroids when available

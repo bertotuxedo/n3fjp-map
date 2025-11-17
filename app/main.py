@@ -84,8 +84,9 @@ API_HOST = cfg_get("API_HOST", cfg_get("N3FJP_HOST", "127.0.0.1"))
 API_PORT = cfg_get("API_PORT", cfg_get("N3FJP_PORT", 1100))
 
 # Added: BAMS / status / messages (port 1000) connection
-BAMS_HOST = cfg_get("BAMS_HOST", API_HOST)
-BAMS_PORT = cfg_get("BAMS_PORT", 1000)
+# Backwards compatibility: fall back to legacy SECONDARY_* keys if provided
+BAMS_HOST = cfg_get("BAMS_HOST", cfg_get("SECONDARY_HOST", API_HOST))
+BAMS_PORT = cfg_get("BAMS_PORT", cfg_get("SECONDARY_PORT", 1000))
 
 N3FJP_CONNECTIONS: List[Dict[str, Any]] = [
     {"name": "api", "host": API_HOST, "port": API_PORT, "protocol": "api"},

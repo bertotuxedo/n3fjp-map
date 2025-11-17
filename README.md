@@ -42,9 +42,13 @@ docker compose down
 The primary configuration lives in `config/config.yaml` (mounted read-only by Docker). Example values:
 
 ```yaml
-# N3FJP TCP server location
+# N3FJP TCP server location (API port 1100)
 N3FJP_HOST: "192.168.1.123"
 N3FJP_PORT: 1100
+
+# BAMS / status / messages connection (port 1000 by default)
+BAMS_HOST: "192.168.1.123"
+BAMS_PORT: 1000
 
 # Behavior
 WFD_MODE: true                 # prefer ARRL section centroids when available
