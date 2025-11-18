@@ -648,6 +648,22 @@ def first_tag(text: str, *names: str) -> Optional[str]:
     return None
 
 
+def normalize_cmd_frame(text: str) -> str:
+    """Collapse whitespace inside tag names so broken wrappers still parse.
+
+    Some feeds include line breaks or padding inside tag names such as
+    ``</B  AND>``. This normalizes those occurrences to ``</BAND>`` so the
+    existing tag() helper can still locate values.
+    """
+
+    def _fix(match: re.Match) -> str:
+        slash = "/" if match.group(1) else ""
+        name = re.sub(r"\s+", "", match.group(2) or "")
+        return f"<{slash}{name}>"
+
+    return re.sub(r"<\s*(/?)\s*([A-Za-z0-9_\s]+)\s*>", _fix, text)
+
+
 STATION_NAME_TAGS = (
     "STATIONNAME",
     "THISSTATIONNAME",
@@ -861,7 +877,7 @@ def _extract_one_frame(buffer: bytearray) -> Optional[str]:
     if end == -1: return None
     rec_bytes = buffer[start + 5 : end]
     del buffer[: end + 6]
-    return rec_bytes.decode(errors="ignore")
+    return normalize_cmd_frame(rec_bytes.decode(errors="ignore"))
 
 async def _send(writer: asyncio.StreamWriter, cmd: str):
     writer.write((cmd + "\r\n").encode())
