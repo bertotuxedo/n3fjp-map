@@ -4,10 +4,15 @@ services:
       context: ./app
       dockerfile: Dockerfile
     container_name: n3fjp-map
+    env_file:
+      - .env
     ports:
       - "8080:8080"
     volumes:
       - ./config:/config:ro
       - ./app/static:/app/static
     environment:
-      - CONFIG_FILE=/config/config.yaml
+      CONFIG_FILE: /config/config.yaml
+      QRZ_USERNAME: ${QRZ_USERNAME:-}
+      QRZ_PASSWORD: ${QRZ_PASSWORD:-}
+      QRZ_AGENT: ${QRZ_AGENT:-n3fjp-map}

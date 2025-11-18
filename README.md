@@ -27,11 +27,17 @@ Real-time map and globe visualization for stations logging contacts with the N3F
    cd n3fjp-map
    ```
 2. Adjust `config/config.yaml` for your station (see [Configuration](#configuration)).
-3. Launch the stack:
+3. (Optional but recommended) Create a `.env` file in the repo root for secrets such as QRZ credentials:
+   ```bash
+   echo "QRZ_USERNAME=your_callsign" >> .env
+   echo "QRZ_PASSWORD=your_password" >> .env
+   echo "QRZ_AGENT=n3fjp-map" >> .env
+   ```
+4. Launch the stack:
    ```bash
    docker compose up --build -d
    ```
-4. Open the UI at `http://<host>:8080`.
+5. Open the UI at `http://<host>:8080`.
 
 The compose file mounts `config/config.yaml` into the container at `/config/config.yaml` and exports port `8080` from the FastAPI app.
 
@@ -88,6 +94,15 @@ You can override most configuration keys using environment variables (matching t
 - `TTL_SECONDS`, `BAND_FILTER`, `MODE_FILTER` — control visibility and filtering.
 
 For local overrides without editing the compose file, create a `.env` file and set your variables before running `docker compose`.
+
+### Putting it all together
+The Docker Compose definition now loads both configuration sources so everything is in play when the container boots:
+
+- The `/config/config.yaml` volume is mounted read-only and pointed to via `CONFIG_FILE` so the service always reads the YAML options you commit to source control.
+- The `.env` file (if present) is loaded via `env_file` and feeds sensitive values like `QRZ_USERNAME`/`QRZ_PASSWORD` into the container without hard-coding them in the YAML file.
+- Environment variables set by `.env` override the YAML values for QRZ settings, letting you keep credentials out of version control while still enabling lookups.
+
+This holistic setup ensures your static config, runtime secrets, and container wiring stay aligned without manual edits in multiple places.
 
 ## Local development run (without Docker)
 1. Ensure Python 3.10+ is installed.
