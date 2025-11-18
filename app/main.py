@@ -672,6 +672,22 @@ def extract_station_name(text: str) -> Optional[str]:
                 return cleaned
     return None
 
+
+def split_list_entries(frame: str) -> List[str]:
+    """Split a single <CMD> frame that may contain multiple LISTRESPONSE entries."""
+    matches = list(re.finditer(r"<LISTRESPONSE>", frame, re.IGNORECASE))
+    if not matches:
+        return []
+    entries: List[str] = []
+    for i, match in enumerate(matches):
+        start = match.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(frame)
+        entry = frame[start:end]
+        # strip any trailing terminator in case the frame wrapper is included
+        entry = entry.split("</CMD>", 1)[0]
+        entries.append(entry)
+    return entries
+
 def parse_lon_west_positive(s: Optional[str]) -> Optional[float]:
     if s is None or s == "":
         return None
@@ -956,80 +972,85 @@ async def n3fjp_client():
 
                     # Periodic LIST polling responses
                     if "LISTRESPONSE" in recU:
-                        list_key = tag(rec, "FLDPRIMARYKEY") or tag(rec, "PRIMARYKEY")
-                        if list_key and not hub.remember_list_entry(list_key):
-                            continue
+                        entries = split_list_entries(rec)
+                        if not entries:
+                            entries = [rec]
 
-                        call = tag(rec, "CALL")
-                        band = tag(rec, "BAND")
-                        mode = (tag(rec, "MODE") or tag(rec, "MODETEST") or "").upper()
-                        sect = (first_tag(rec, "SECTION", "SPCNUM", "ARRL_SECT") or "").upper()
-                        oper = tag(rec, "FLDOPERATOR") or tag(rec, "OPERATOR") or tag(rec, "MYCALL") or ""
-                        country = tag(rec, "COUNTRY") or tag(rec, "COUNTRYWORKED") or ""
-                        station_name = tag(rec, "FLDSTATION") or extract_station_name(rec)
+                        for entry in entries:
+                            list_key = tag(entry, "FLDPRIMARYKEY") or tag(entry, "PRIMARYKEY")
+                            if list_key and not hub.remember_list_entry(list_key):
+                                continue
 
-                        if oper and oper not in hub.operators_seen:
-                            hub.operators_seen.add(oper)
-                            await hub.broadcast({"type": "operators", "data": sorted(hub.operators_seen)})
+                            call = tag(entry, "CALL")
+                            band = tag(entry, "BAND")
+                            mode = (tag(entry, "MODE") or tag(entry, "MODETEST") or "").upper()
+                            sect = (first_tag(entry, "SECTION", "SPCNUM", "ARRL_SECT") or "").upper()
+                            oper = tag(entry, "FLDOPERATOR") or tag(entry, "OPERATOR") or tag(entry, "MYCALL") or ""
+                            country = tag(entry, "COUNTRY") or tag(entry, "COUNTRYWORKED") or ""
+                            station_name = tag(entry, "FLDSTATION") or extract_station_name(entry)
 
-                        base_meta = {
-                            "call": call,
-                            "band": band,
-                            "mode": mode,
-                            "section": sect,
-                            "operator": oper,
-                        }
-                        if station_name:
-                            base_meta["station"] = station_name
-                        if country:
-                            base_meta["country"] = country
+                            if oper and oper not in hub.operators_seen:
+                                hub.operators_seen.add(oper)
+                                await hub.broadcast({"type": "operators", "data": sorted(hub.operators_seen)})
 
-                        station_origin = hub.get_station_origin(station_name)
+                            base_meta = {
+                                "call": call,
+                                "band": band,
+                                "mode": mode,
+                                "section": sect,
+                                "operator": oper,
+                            }
+                            if station_name:
+                                base_meta["station"] = station_name
+                            if country:
+                                base_meta["country"] = country
 
-                        tlat_s = tag(rec, "LAT")
-                        tlon_s = first_tag(rec, "LON", "LONG")
-                        dest = None
+                            station_origin = hub.get_station_origin(station_name)
 
-                        if (WFD_MODE or PREFER_SECTION_ALWAYS) and sect:
-                            sec = section_to_latlon(sect)
-                            if sec:
-                                dest = {"lat": sec["lat"], "lon": sec["lon"], "grid": None}
+                            tlat_s = tag(entry, "LAT")
+                            tlon_s = first_tag(entry, "LON", "LONG")
+                            dest = None
 
-                        if not dest and tlat_s and tlon_s:
-                            lat = float(tlat_s); lon = parse_lon_west_positive(tlon_s)
-                            if lon is not None:
-                                dest = {"lat": lat, "lon": lon, "grid": None}
+                            if (WFD_MODE or PREFER_SECTION_ALWAYS) and sect:
+                                sec = section_to_latlon(sect)
+                                if sec:
+                                    dest = {"lat": sec["lat"], "lon": sec["lon"], "grid": None}
 
-                        if not dest and call:
-                            dx_flag = parse_bool(tag(rec, "DX"))
-                            if dx_flag is None:
-                                dx_flag = bool(country and "USA" not in country.upper() and "UNITED STATES" not in country.upper())
-                            if dx_flag:
-                                qrz_result = await qrz_client.lookup(call)
-                                if qrz_result:
-                                    qrz_country = qrz_result.get("country")
-                                    if qrz_country:
-                                        base_meta["country"] = qrz_country
-                                    qrz_dest = qrz_result.get("dest")
-                                    if qrz_dest and qrz_dest.get("lat") is not None and qrz_dest.get("lon") is not None:
-                                        dest = qrz_dest
-                                    if not dest:
-                                        centroid = country_centroid(base_meta.get("country") or qrz_country)
-                                        if centroid:
-                                            dest = centroid
+                            if not dest and tlat_s and tlon_s:
+                                lat = float(tlat_s); lon = parse_lon_west_positive(tlon_s)
+                                if lon is not None:
+                                    dest = {"lat": lat, "lon": lon, "grid": None}
 
-                        if not dest and base_meta.get("country"):
-                            centroid = country_centroid(base_meta.get("country"))
-                            if centroid:
-                                dest = centroid
+                            if not dest and call:
+                                dx_flag = parse_bool(tag(entry, "DX"))
+                                if dx_flag is None:
+                                    dx_flag = bool(country and "USA" not in country.upper() and "UNITED STATES" not in country.upper())
+                                if dx_flag:
+                                    qrz_result = await qrz_client.lookup(call)
+                                    if qrz_result:
+                                        qrz_country = qrz_result.get("country")
+                                        if qrz_country:
+                                            base_meta["country"] = qrz_country
+                                        qrz_dest = qrz_result.get("dest")
+                                        if qrz_dest and qrz_dest.get("lat") is not None and qrz_dest.get("lon") is not None:
+                                            dest = qrz_dest
+                                        if not dest:
+                                            centroid = country_centroid(base_meta.get("country") or qrz_country)
+                                            if centroid:
+                                                dest = centroid
 
-                        origin_override = station_origin
-                        operator_origin = await operator_origin_from_qrz(oper)
-                        if operator_origin:
-                            origin_override = operator_origin
+                            if not dest and base_meta.get("country"):
+                                centroid = country_centroid(base_meta.get("country"))
+                                if centroid:
+                                    dest = centroid
 
-                        if dest:
-                            await hub.emit_path(dest, base_meta, TTL_SECONDS, origin_override=origin_override)
+                            origin_override = station_origin
+                            operator_origin = await operator_origin_from_qrz(oper)
+                            if operator_origin:
+                                origin_override = operator_origin
+
+                            if dest:
+                                await hub.emit_path(dest, base_meta, TTL_SECONDS, origin_override=origin_override)
                         continue
 
                     # Draw ONLY on ENTEREVENT (submit)
