@@ -108,6 +108,9 @@ API_PORT = cfg_get("API_PORT", cfg_get("N3FJP_PORT", 1100))
 # Added: BAMS / status / messages (port 1000) connection
 BAMS_HOST = cfg_get("BAMS_HOST", API_HOST)
 BAMS_PORT = cfg_get("BAMS_PORT", 1000)
+BAMS_STATION_NAME = cfg_get("BAMS_STATION_NAME", "SERVER")
+BAMS_BAND = cfg_get("BAMS_BAND", "3CM")
+BAMS_MODE = cfg_get("BAMS_MODE", "CW")
 
 N3FJP_CONNECTIONS: List[Dict[str, Any]] = [
     {"name": "api", "host": API_HOST, "port": API_PORT, "protocol": "api"},
@@ -891,6 +894,28 @@ async def _heartbeat(writer: asyncio.StreamWriter):
         logging.info(f"Heartbeat ended: {e}")
 
 
+def _bams_presence_frame(status: str = "CONNECTED") -> str:
+    return (
+        "<BOR><BAMS>"
+        f"<STATION>{BAMS_STATION_NAME}</STATION>"
+        f"<BAND>{BAMS_BAND}</BAND>"
+        f"<MODE>{BAMS_MODE}</MODE>"
+        f"<STATUS>{status}</STATUS>"
+        "</BAMS><EOR>"
+    )
+
+
+async def _bams_presence(writer: asyncio.StreamWriter):
+    try:
+        while True:
+            await _send(writer, _bams_presence_frame())
+            await asyncio.sleep(HEARTBEAT_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logging.info(f"BAMS presence loop ended: {e}")
+
+
 # ---------- N3FJP TCP client task ----------
 async def n3fjp_client(conn: Dict[str, Any]):
     await asyncio.sleep(1)
@@ -902,6 +927,7 @@ async def n3fjp_client(conn: Dict[str, Any]):
         reader: Optional[asyncio.StreamReader] = None
         writer: Optional[asyncio.StreamWriter] = None
         hb_task: Optional[asyncio.Task] = None
+        bams_presence_task: Optional[asyncio.Task] = None
         try:
             logging.info(f"Connecting to N3FJP ({name}/{protocol}) at {host}:{port} ...")
             reader, writer = await asyncio.open_connection(host, port)
@@ -1031,6 +1057,8 @@ async def n3fjp_client(conn: Dict[str, Any]):
             else:
                 buf = ""
                 last_emit_holder = [0.0]
+                await _send(writer, _bams_presence_frame())
+                bams_presence_task = asyncio.create_task(_bams_presence(writer))
 
                 while True:
                     chunk = await reader.read(4096)
@@ -1097,6 +1125,10 @@ async def n3fjp_client(conn: Dict[str, Any]):
                 hb_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await hb_task
+            if bams_presence_task:
+                bams_presence_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await bams_presence_task
             if writer:
                 with contextlib.suppress(Exception):
                     writer.close()
