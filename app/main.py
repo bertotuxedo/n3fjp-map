@@ -95,7 +95,7 @@ BAND_FILTER = set([b.strip() for b in str(cfg_get("BAND_FILTER", "")).split(",")
 MODE_FILTER = set([m.strip().upper() for m in str(cfg_get("MODE_FILTER", "")).split(",") if m.strip()])
 
 HEARTBEAT_SECONDS = max(3, cfg_get("HEARTBEAT_SECONDS", 5))
-LIST_POLL_SECONDS = max(10, cfg_get("LIST_POLL_SECONDS", 60))
+LIST_POLL_SECONDS = max(10, cfg_get("LIST_POLL_SECONDS", 5))
 
 PRIMARY_STATION_NAME = cfg_get("PRIMARY_STATION_NAME", "Primary Station")
 STATION_LOCATIONS_RAW = cfg_get("STATION_LOCATIONS", {})
@@ -1045,7 +1045,7 @@ async def _heartbeat(writer: asyncio.StreamWriter):
 async def _poll_recent(writer: asyncio.StreamWriter):
     try:
         while True:
-            await _send(writer, "<CMD><LIST><INCLUDEALL><VALUE>20</VALUE></CMD>")
+            await _send(writer, "<CMD><LIST><INCLUDEALL><VALUE>10000</VALUE></CMD>")
             await asyncio.sleep(LIST_POLL_SECONDS)
     except asyncio.CancelledError:
         raise
