@@ -240,19 +240,10 @@ async def operator_origin_from_qrz(call: Optional[str]) -> Optional[Dict[str, An
 
     dest = qrz_result.get("dest")
     if not dest:
-        state = qrz_result.get("state")
-        if state:
-            dest = state_centroid(state)
-    if not dest:
-        country = qrz_result.get("country")
-        if country:
-            dest = country_centroid(country)
+        return None
 
-    if dest:
-        operator_origin_cache[canon] = dest
-        return copy.deepcopy(dest)
-
-    return None
+    operator_origin_cache[canon] = dest
+    return copy.deepcopy(dest)
 
 # ---------- FastAPI ----------
 app = FastAPI()
