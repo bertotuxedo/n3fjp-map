@@ -98,6 +98,7 @@ def cfg_get(name: str, default: Any):
 
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
 
 # ---------- Config ----------
 # API (port 1100) connection
@@ -112,6 +113,14 @@ N3FJP_CONNECTIONS: List[Dict[str, Any]] = [
     {"name": "api", "host": API_HOST, "port": API_PORT, "protocol": "api"},
     {"name": "bams", "host": BAMS_HOST, "port": BAMS_PORT, "protocol": "bams"},
 ]
+
+logger.info(
+    "Configured connections: API %s:%s, BAMS %s:%s",
+    API_HOST,
+    API_PORT,
+    BAMS_HOST,
+    BAMS_PORT,
+)
 
 WFD_MODE = cfg_get("WFD_MODE", False)
 PREFER_SECTION_ALWAYS = cfg_get("PREFER_SECTION_ALWAYS", False)
@@ -613,6 +622,16 @@ def parse_lon_west_positive(s: Optional[str]) -> Optional[float]:
     except Exception:
         return None
 
+
+def log_record_warning(prefix: str, rec: str, exc: Optional[BaseException] = None) -> None:
+    snippet = (rec or "").replace("\n", " ")
+    if len(snippet) > 300:
+        snippet = snippet[:300] + "..."
+    if exc:
+        logger.warning("%s: %s | snippet=%s", prefix, exc, snippet)
+    else:
+        logger.warning("%s | snippet=%s", prefix, snippet)
+
 def maidenhead_from_latlon(lat: float, lon: float, precision: int = 6) -> str:
     lon += 180.0
     lat += 90.0
@@ -659,7 +678,14 @@ def decode_bams_line(raw: str) -> str:
     Convert N3FJP BAMS dotted encoding into normal tag/value text.
     Example: '<.B.O.R.>.<.B.A.M.S.>...' -> '<BOR><BAMS>...'
     """
-    return raw.replace(".", "").strip()
+    try:
+        decoded = raw.replace(".", "").strip()
+        if not decoded:
+            logger.debug("Skipping empty BAMS line after decode")
+        return decoded
+    except Exception as exc:
+        log_record_warning("Failed to decode BAMS line", raw, exc)
+        return ""
 
 
 def parse_fld_record(rec: str) -> Optional[Dict[str, Any]]:
@@ -671,7 +697,8 @@ def parse_fld_record(rec: str) -> Optional[Dict[str, Any]]:
         return None
     try:
         parsed = xmltodict.parse(f"<root>{xml_body}</root>") or {}
-    except Exception:
+    except Exception as exc:
+        log_record_warning("Failed to parse FLD record", rec, exc)
         return None
     root = parsed.get("root") or {}
     fields: Dict[str, Any] = {k.upper(): v for k, v in root.items() if v not in (None, "")}
@@ -1079,6 +1106,12 @@ async def n3fjp_client(conn: Dict[str, Any]):
 async def startup_event():
     app.state.n3fjp_tasks: List[asyncio.Task] = []
     for conn in N3FJP_CONNECTIONS:
+        logger.info(
+            "Starting connection task for %s (%s:%s)",
+            conn.get("name", "unknown"),
+            conn.get("host"),
+            conn.get("port"),
+        )
         task = asyncio.create_task(n3fjp_client(conn))
         app.state.n3fjp_tasks.append(task)
 
