@@ -984,6 +984,8 @@ async def n3fjp_client():
                         if country:
                             base_meta["country"] = country
 
+                        station_origin = hub.get_station_origin(station_name)
+
                         tlat_s = tag(rec, "LAT")
                         tlon_s = first_tag(rec, "LON", "LONG")
                         dest = None
@@ -1021,8 +1023,12 @@ async def n3fjp_client():
                             if centroid:
                                 dest = centroid
 
-                        origin_override = await operator_origin_from_qrz(oper)
-                        if dest and origin_override:
+                        origin_override = station_origin
+                        operator_origin = await operator_origin_from_qrz(oper)
+                        if operator_origin:
+                            origin_override = operator_origin
+
+                        if dest:
                             await hub.emit_path(dest, base_meta, TTL_SECONDS, origin_override=origin_override)
                         continue
 
