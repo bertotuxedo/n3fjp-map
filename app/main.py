@@ -94,6 +94,7 @@ BAND_FILTER = set([b.strip() for b in str(cfg_get("BAND_FILTER", "")).split(",")
 MODE_FILTER = set([m.strip().upper() for m in str(cfg_get("MODE_FILTER", "")).split(",") if m.strip()])
 
 HEARTBEAT_SECONDS = max(3, cfg_get("HEARTBEAT_SECONDS", 5))
+LIST_POLL_SECONDS = max(10, cfg_get("LIST_POLL_SECONDS", 60))
 
 PRIMARY_STATION_NAME = cfg_get("PRIMARY_STATION_NAME", "Primary Station")
 STATION_LOCATIONS_RAW = cfg_get("STATION_LOCATIONS", {})
@@ -215,6 +216,33 @@ class QRZClient:
 
 qrz_client = QRZClient(QRZ_USERNAME, QRZ_PASSWORD, QRZ_AGENT)
 
+operator_origin_cache: Dict[str, Dict[str, Any]] = {}
+
+
+async def operator_origin_from_qrz(call: Optional[str]) -> Optional[Dict[str, Any]]:
+    canon = canonical_station_key(call)
+    if not canon:
+        return None
+    cached = operator_origin_cache.get(canon)
+    if cached:
+        return copy.deepcopy(cached)
+
+    qrz_result = await qrz_client.lookup(canon)
+    if not qrz_result:
+        return None
+
+    dest = qrz_result.get("dest")
+    if not dest:
+        country = qrz_result.get("country")
+        if country:
+            dest = country_centroid(country)
+
+    if dest:
+        operator_origin_cache[canon] = dest
+        return copy.deepcopy(dest)
+
+    return None
+
 # ---------- FastAPI ----------
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -256,6 +284,8 @@ class Hub:
         self.sections_worked: Set[str] = set()
         self.countries_worked: Set[str] = set()
         self.station_origins: Dict[str, Dict[str, Any]] = {}
+        self.list_seen_keys: Deque[str] = deque(maxlen=500)
+        self.list_seen_index: Set[str] = set()
         # metrics
         self.metrics = {
             "frames_parsed_total": 0,
@@ -415,6 +445,18 @@ class Hub:
         entries = [copy.deepcopy(v) for v in self.station_origins.values()]
         entries.sort(key=lambda item: (item.get("name") or "").upper())
         return entries
+
+    def remember_list_entry(self, key: Optional[str]) -> bool:
+        if not key:
+            return False
+        if key in self.list_seen_index:
+            return False
+        if len(self.list_seen_keys) == self.list_seen_keys.maxlen:
+            oldest = self.list_seen_keys.popleft()
+            self.list_seen_index.discard(oldest)
+        self.list_seen_keys.append(key)
+        self.list_seen_index.add(key)
+        return True
 
     def _preload_station_origins(self, initial: Dict[str, Dict[str, Any]]):
         for key, entry in initial.items():
@@ -819,10 +861,24 @@ async def _heartbeat(writer: asyncio.StreamWriter):
     except Exception as e:
         logging.info(f"Heartbeat ended: {e}")
 
+
+async def _poll_recent(writer: asyncio.StreamWriter):
+    try:
+        while True:
+            await _send(writer, "<CMD><LIST><INCLUDEALL><VALUE>20</VALUE></CMD>")
+            await asyncio.sleep(LIST_POLL_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logging.info(f"Recent poller ended: {e}")
+
 # ---------- N3FJP TCP client task ----------
 async def n3fjp_client():
     await asyncio.sleep(1)
     while True:
+        writer: Optional[asyncio.StreamWriter] = None
+        hb_task: Optional[asyncio.Task] = None
+        poll_task: Optional[asyncio.Task] = None
         try:
             logging.info(f"Connecting to N3FJP at {N3FJP_HOST}:{N3FJP_PORT} ...")
             reader, writer = await asyncio.open_connection(N3FJP_HOST, N3FJP_PORT)
@@ -837,6 +893,7 @@ async def n3fjp_client():
             await _send(writer, "<CMD><OPINFO></CMD>")
 
             hb_task = asyncio.create_task(_heartbeat(writer))
+            poll_task = asyncio.create_task(_poll_recent(writer))
             buf = bytearray()
             last_emit = 0.0
 
@@ -895,6 +952,78 @@ async def n3fjp_client():
                                 hub.origin = origin
                                 await hub.broadcast({"type": "origin", "data": hub.origin_payload()})
                                 await hub.broadcast({"type": "status", "data": hub.compose_status()})
+                        continue
+
+                    # Periodic LIST polling responses
+                    if "LISTRESPONSE" in recU:
+                        list_key = tag(rec, "FLDPRIMARYKEY") or tag(rec, "PRIMARYKEY")
+                        if list_key and not hub.remember_list_entry(list_key):
+                            continue
+
+                        call = tag(rec, "CALL")
+                        band = tag(rec, "BAND")
+                        mode = (tag(rec, "MODE") or tag(rec, "MODETEST") or "").upper()
+                        sect = (first_tag(rec, "SECTION", "SPCNUM", "ARRL_SECT") or "").upper()
+                        oper = tag(rec, "FLDOPERATOR") or tag(rec, "OPERATOR") or tag(rec, "MYCALL") or ""
+                        country = tag(rec, "COUNTRY") or tag(rec, "COUNTRYWORKED") or ""
+                        station_name = tag(rec, "FLDSTATION") or extract_station_name(rec)
+
+                        if oper and oper not in hub.operators_seen:
+                            hub.operators_seen.add(oper)
+                            await hub.broadcast({"type": "operators", "data": sorted(hub.operators_seen)})
+
+                        base_meta = {
+                            "call": call,
+                            "band": band,
+                            "mode": mode,
+                            "section": sect,
+                            "operator": oper,
+                        }
+                        if station_name:
+                            base_meta["station"] = station_name
+                        if country:
+                            base_meta["country"] = country
+
+                        tlat_s = tag(rec, "LAT")
+                        tlon_s = first_tag(rec, "LON", "LONG")
+                        dest = None
+
+                        if (WFD_MODE or PREFER_SECTION_ALWAYS) and sect:
+                            sec = section_to_latlon(sect)
+                            if sec:
+                                dest = {"lat": sec["lat"], "lon": sec["lon"], "grid": None}
+
+                        if not dest and tlat_s and tlon_s:
+                            lat = float(tlat_s); lon = parse_lon_west_positive(tlon_s)
+                            if lon is not None:
+                                dest = {"lat": lat, "lon": lon, "grid": None}
+
+                        if not dest and call:
+                            dx_flag = parse_bool(tag(rec, "DX"))
+                            if dx_flag is None:
+                                dx_flag = bool(country and "USA" not in country.upper() and "UNITED STATES" not in country.upper())
+                            if dx_flag:
+                                qrz_result = await qrz_client.lookup(call)
+                                if qrz_result:
+                                    qrz_country = qrz_result.get("country")
+                                    if qrz_country:
+                                        base_meta["country"] = qrz_country
+                                    qrz_dest = qrz_result.get("dest")
+                                    if qrz_dest and qrz_dest.get("lat") is not None and qrz_dest.get("lon") is not None:
+                                        dest = qrz_dest
+                                    if not dest:
+                                        centroid = country_centroid(base_meta.get("country") or qrz_country)
+                                        if centroid:
+                                            dest = centroid
+
+                        if not dest and base_meta.get("country"):
+                            centroid = country_centroid(base_meta.get("country"))
+                            if centroid:
+                                dest = centroid
+
+                        origin_override = await operator_origin_from_qrz(oper)
+                        if dest and origin_override:
+                            await hub.emit_path(dest, base_meta, TTL_SECONDS, origin_override=origin_override)
                         continue
 
                     # Draw ONLY on ENTEREVENT (submit)
@@ -1014,6 +1143,16 @@ async def n3fjp_client():
             hub.state.update(connected=False, last_disconnect_ts=time.time(), last_error=str(e))
             await hub.broadcast({"type": "status", "data": hub.compose_status()})
             await asyncio.sleep(2)
+        finally:
+            for t in (hb_task, poll_task):
+                if t:
+                    t.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await t
+            if writer:
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
 
 @app.on_event("startup")
 async def startup_event():
