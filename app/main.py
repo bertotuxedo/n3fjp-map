@@ -678,11 +678,16 @@ def parse_bool(value: Optional[str]) -> Optional[bool]:
 
 def decode_bams_line(raw: str) -> str:
     """
-    Convert N3FJP BAMS dotted encoding into normal tag/value text.
-    Example: '<.B.O.R.>.<.B.A.M.S.>...' -> '<BOR><BAMS>...'
+    Convert N3FJP BAMS dotted encoding into normal tag/value text while
+    preserving decimal points in coordinates or other numeric fields.
+
+    The BAMS feed intersperses dots between characters in the XML-ish tags
+    ("<.B.O.R.>" → "<BOR>"), but value fields such as lat/lon legitimately
+    contain periods. We therefore strip dots that are *not* adjacent to
+    digits, keeping numeric decimals intact.
     """
     try:
-        decoded = raw.replace(".", "").strip()
+        decoded = re.sub(r"(?<!\d)\.(?!\d)", "", raw).strip()
         if not decoded:
             logger.debug("Skipping empty BAMS line after decode")
         return decoded
