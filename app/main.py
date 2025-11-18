@@ -11,6 +11,7 @@ import unicodedata
 from typing import Set, Dict, Any, Optional, Deque, Tuple, List
 from collections import deque
 import copy
+from datetime import datetime
 
 import httpx
 import xmltodict
@@ -286,8 +287,10 @@ class Hub:
         self.sections_worked: Set[str] = set()
         self.countries_worked: Set[str] = set()
         self.station_origins: Dict[str, Dict[str, Any]] = {}
+        self.broadcast_messages: Deque[Dict[str, Any]] = deque(maxlen=100)
         self.list_seen_keys: Deque[str] = deque(maxlen=500)
         self.list_seen_index: Set[str] = set()
+        self.next_message_id: int = 1
         # metrics
         self.metrics = {
             "frames_parsed_total": 0,
@@ -341,7 +344,33 @@ class Hub:
             "wfd_mode": WFD_MODE,
             "prefer_section": PREFER_SECTION_ALWAYS,
             "ttl_seconds": TTL_SECONDS,
+            "broadcast_messages": list(self.broadcast_messages),
         }
+
+    async def add_broadcast_message(self, message: Optional[Dict[str, Any]]):
+        if not message:
+            return
+        to_field = (message.get("to") or "").strip()
+        if to_field:
+            return
+        ts_raw = message.get("timestamp")
+        try:
+            ts_val = float(ts_raw) if ts_raw is not None else None
+        except Exception:
+            ts_val = None
+        if ts_val is None:
+            ts_val = time.time()
+        payload = {
+            "id": self.next_message_id,
+            "to": "",
+            "from": (message.get("from") or message.get("sender") or "").strip(),
+            "timestamp": ts_val,
+            "time_text": message.get("time_text") or datetime.fromtimestamp(ts_val).strftime("%m/%d/%Y %I:%M:%S %p"),
+            "message": (message.get("message") or "").strip(),
+        }
+        self.next_message_id += 1
+        self.broadcast_messages.append(payload)
+        await self.broadcast({"type": "broadcast_message", "data": payload})
 
     def should_draw(self, call: Optional[str], band: Optional[str], mode: Optional[str]) -> bool:
         now = time.time()
@@ -766,6 +795,37 @@ def split_list_entries(frame: str) -> List[str]:
         entries.append(entry)
     return entries
 
+
+def parse_dialogue_message(text: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not text:
+        return None
+    cleaned = text.replace("\r", "")
+    lines = cleaned.splitlines()
+    if not lines:
+        return None
+    header = lines[0].strip()
+    body = "\n".join(lines[1:]).strip()
+    match = re.search(
+        r"To:\s*(?P<to>.*?)\s*From:\s*(?P<sender>.*?)\s+(?P<date>\d{1,2}/\d{1,2}/\d{4})\s+(?P<time>\d{1,2}:\d{2}:\d{2}\s*[AP]M)",
+        header,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    time_text = f"{match.group('date')} {match.group('time')}".strip()
+    ts_val: Optional[float] = None
+    try:
+        ts_val = datetime.strptime(time_text, "%m/%d/%Y %I:%M:%S %p").timestamp()
+    except Exception:
+        ts_val = None
+    return {
+        "to": match.group("to").strip(),
+        "from": match.group("sender").strip(),
+        "timestamp": ts_val,
+        "time_text": time_text,
+        "message": body,
+    }
+
 def parse_lon_west_positive(s: Optional[str]) -> Optional[float]:
     if s is None or s == "":
         return None
@@ -1035,6 +1095,12 @@ async def n3fjp_client():
                     hub.state["last_raw"] = rec
                     hub.recent_raw.append(rec)
                     recU = rec.upper()
+
+                    if "LBLDIALOGUE" in recU:
+                        parsed_message = parse_dialogue_message(tag(rec, "VALUE"))
+                        if parsed_message:
+                            await hub.add_broadcast_message(parsed_message)
+                        continue
 
                     # Version/Program
                     if "APIVERRESPONSE" in recU:

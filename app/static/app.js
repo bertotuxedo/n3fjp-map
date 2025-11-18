@@ -9,6 +9,7 @@ const lastEvt    = document.getElementById('lastEvt');
 const workedCount= document.getElementById('workedCount');
 const countriesCount = document.getElementById('countriesCount');
 const recentBox  = document.getElementById('recentBox');
+const messageThread = document.getElementById('messageThread');
 const bandSel    = document.getElementById('bandSel');
 const modeSel    = document.getElementById('modeSel');
 const operSel    = document.getElementById('operSel');
@@ -40,6 +41,7 @@ function morseDashArray(){
 const CW_DASH = morseDashArray();
 
 const recentContacts = [];
+const broadcastMessages = [];
 const mapSegments = new Map();
 let selectedContactId = null;
 let selectedMapHighlight = null;
@@ -270,6 +272,79 @@ function renderRecentList(){
   });
   recentBox.replaceChildren(frag);
 }
+
+function formatBroadcastTime(entry){
+  if (!entry) return '';
+  if (typeof entry.timestamp === 'number' && Number.isFinite(entry.timestamp)){
+    return new Date(entry.timestamp * 1000).toLocaleString();
+  }
+  return entry.time_text || '';
+}
+
+function renderMessageThread(){
+  if (!messageThread) return;
+  const frag = document.createDocumentFragment();
+  const ordered = broadcastMessages.slice().sort((a,b)=>{
+    const ta = typeof a.timestamp === 'number' ? a.timestamp : 0;
+    const tb = typeof b.timestamp === 'number' ? b.timestamp : 0;
+    return ta - tb;
+  });
+
+  if (!ordered.length){
+    const empty = document.createElement('div');
+    empty.className = 'message-meta';
+    empty.textContent = 'No broadcasts yet.';
+    frag.appendChild(empty);
+  } else {
+    ordered.forEach(entry => {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'message-entry';
+
+      const meta = document.createElement('div');
+      meta.className = 'message-meta';
+      const sender = document.createElement('span');
+      sender.textContent = entry.from || 'Broadcast';
+      const time = document.createElement('span');
+      time.textContent = formatBroadcastTime(entry);
+      meta.appendChild(sender);
+      meta.appendChild(time);
+
+      const body = document.createElement('div');
+      body.className = 'message-body';
+      body.textContent = entry.message || '';
+
+      wrapper.appendChild(meta);
+      wrapper.appendChild(body);
+      frag.appendChild(wrapper);
+    });
+  }
+
+  messageThread.replaceChildren(frag);
+}
+
+function registerBroadcastMessage(data, shouldRender = true){
+  if (!data) return;
+  const toField = (data.to || '').toString().trim();
+  if (toField) return; // only broadcast messages
+  const entry = {
+    id: data.id || `msg-${Date.now()}-${broadcastMessages.length + 1}`,
+    from: (data.from || data.sender || '').toString(),
+    timestamp: Number.isFinite(Number(data.timestamp)) ? Number(data.timestamp) : null,
+    time_text: data.time_text || '',
+    message: (data.message || '').toString().trim(),
+  };
+  broadcastMessages.push(entry);
+  while (broadcastMessages.length > 75) broadcastMessages.shift();
+  if (shouldRender) renderMessageThread();
+}
+
+function replaceBroadcastMessages(list){
+  broadcastMessages.length = 0;
+  (list || []).forEach(item => registerBroadcastMessage(item, false));
+  renderMessageThread();
+}
+
+renderMessageThread();
 
 function setGlobeHighlight(contact){
   if (!contact || !contact.from || !contact.to || typeof contact.from.lat !== 'number' || typeof contact.from.lon !== 'number' || typeof contact.to.lat !== 'number' || typeof contact.to.lon !== 'number'){
@@ -1014,6 +1089,7 @@ async function refreshStatus(){
       s.countries_worked.forEach(grayCountry);
     }
     if (s.operators) updateOperators(s.operators);
+    if (s.broadcast_messages) replaceBroadcastMessages(s.broadcast_messages);
   } catch {}
 }
 refreshStatus(); setInterval(refreshStatus, 5000);
@@ -1032,12 +1108,15 @@ ws.onmessage = (ev)=>{
       if (s.last_event_ts) lastEvt.textContent=new Date(s.last_event_ts*1000).toLocaleString();
       if (typeof s.primary_station_name === 'string' && s.primary_station_name.trim()) primaryStationName = s.primary_station_name;
       if (Array.isArray(s.station_origins)) applyStationOriginList(s.station_origins);
+      if (s.broadcast_messages) replaceBroadcastMessages(s.broadcast_messages);
     } else if (msg.type==='origin'){
       setOrigin(msg.data);
     } else if (msg.type==='station_origins'){
       applyStationOriginList(msg.data || []);
     } else if (msg.type==='station_origin'){
       registerStationOrigin(msg.data);
+    } else if (msg.type==='broadcast_message'){
+      registerBroadcastMessage(msg.data);
     } else if (msg.type==='path'){
       const data = msg.data || {};
       // map
