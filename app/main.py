@@ -98,6 +98,7 @@ LIST_POLL_SECONDS = max(10, cfg_get("LIST_POLL_SECONDS", 60))
 
 PRIMARY_STATION_NAME = cfg_get("PRIMARY_STATION_NAME", "Primary Station")
 STATION_LOCATIONS_RAW = cfg_get("STATION_LOCATIONS", {})
+OPERATOR_LOCATIONS_RAW = cfg_get("OPERATOR_LOCATIONS", {})
 
 QRZ_USERNAME = cfg_get("QRZ_USERNAME", "")
 QRZ_PASSWORD = cfg_get("QRZ_PASSWORD", "")
@@ -192,6 +193,7 @@ class QRZClient:
         lon_s = callsign.get("lon") or callsign.get("longitude")
         grid = callsign.get("grid") or callsign.get("Grid")
         country = callsign.get("country") or callsign.get("Country")
+        state = callsign.get("state") or callsign.get("State") or callsign.get("addr2")
 
         dest: Optional[Dict[str, Any]] = None
         try:
@@ -211,6 +213,8 @@ class QRZClient:
             result["dest"] = dest
         if country:
             result["country"] = country
+        if state:
+            result["state"] = state
         return result or None
 
 
@@ -223,6 +227,9 @@ async def operator_origin_from_qrz(call: Optional[str]) -> Optional[Dict[str, An
     canon = canonical_station_key(call)
     if not canon:
         return None
+    override = OPERATOR_ORIGIN_OVERRIDES.get(canon)
+    if override:
+        return copy.deepcopy(override)
     cached = operator_origin_cache.get(canon)
     if cached:
         return copy.deepcopy(cached)
@@ -232,6 +239,10 @@ async def operator_origin_from_qrz(call: Optional[str]) -> Optional[Dict[str, An
         return None
 
     dest = qrz_result.get("dest")
+    if not dest:
+        state = qrz_result.get("state")
+        if state:
+            dest = state_centroid(state)
     if not dest:
         country = qrz_result.get("country")
         if country:
@@ -537,6 +548,66 @@ with open("static/data/centroids/sections.json", "r", encoding="utf-8") as f:
     SECTION_CENTROIDS: Dict[str, Dict[str, float]] = json.load(f)
 
 
+STATE_CENTROIDS: Dict[str, Dict[str, Any]] = {}
+STATE_ALIAS_INDEX: Dict[str, str] = {}
+
+
+def canonical_state_key(name: Optional[str]) -> Optional[str]:
+    if not name:
+        return None
+    normalized = unicodedata.normalize("NFD", str(name))
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    normalized = re.sub(r"[^0-9A-Za-z]+", " ", normalized)
+    normalized = normalized.strip().upper()
+    return normalized or None
+
+
+def resolve_state_key(name: Optional[str]) -> Optional[str]:
+    key = canonical_state_key(name)
+    if not key:
+        return None
+    if key in STATE_CENTROIDS:
+        return key
+    return STATE_ALIAS_INDEX.get(key)
+
+
+def state_centroid(name: Optional[str]) -> Optional[Dict[str, Any]]:
+    key = resolve_state_key(name)
+    if not key:
+        return None
+    info = STATE_CENTROIDS.get(key)
+    if not info:
+        return None
+    lat = info.get("lat")
+    lon = info.get("lon")
+    if lat is None or lon is None:
+        return None
+    dest = {"lat": lat, "lon": lon, "grid": None}
+    try:
+        dest["grid"] = maidenhead_from_latlon(lat, lon)
+    except Exception:
+        dest["grid"] = None
+    return dest
+
+
+try:
+    with open("static/data/centroids/us_states.json", "r", encoding="utf-8") as f:
+        STATE_CENTROIDS = json.load(f)
+    for abbr, info in STATE_CENTROIDS.items():
+        abbr_key = canonical_state_key(abbr)
+        if abbr_key:
+            STATE_ALIAS_INDEX.setdefault(abbr_key, abbr)
+        name_key = canonical_state_key(info.get("name"))
+        if name_key:
+            STATE_ALIAS_INDEX.setdefault(name_key, abbr)
+        for alias in info.get("aliases", []) or []:
+            alias_key = canonical_state_key(alias)
+            if alias_key:
+                STATE_ALIAS_INDEX.setdefault(alias_key, abbr)
+except Exception as exc:
+    logging.warning(f"Failed to load state centroids: {exc}")
+
+
 COUNTRY_CENTROIDS: Dict[str, Dict[str, Any]] = {}
 COUNTRY_ALIAS_INDEX: Dict[str, str] = {}
 
@@ -774,6 +845,9 @@ def _station_origin_from_spec(spec: Any) -> Optional[Dict[str, Any]]:
         text = spec.strip()
         if not text:
             return None
+        state_dest = state_centroid(text)
+        if state_dest:
+            return state_dest
         if re.fullmatch(r"[A-Za-z]{2}\d{2}[A-Za-z]{0,2}", text):
             coords = latlon_from_maidenhead(text)
             if coords:
@@ -805,6 +879,11 @@ def _station_origin_from_spec(spec: Any) -> Optional[Dict[str, Any]]:
             if coords:
                 coords["grid"] = str(grid).upper()
                 return coords
+        state_val = spec.get("state") or spec.get("State")
+        if state_val:
+            dest = state_centroid(state_val)
+            if dest:
+                return dest
     return None
 
 
@@ -824,7 +903,25 @@ def build_station_origin_map(raw: Any) -> Dict[str, Dict[str, Any]]:
     return result
 
 
+def build_operator_origin_map(raw: Any) -> Dict[str, Dict[str, Any]]:
+    result: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return result
+    for name, spec in raw.items():
+        key = canonical_station_key(name)
+        if not key:
+            continue
+        entry = _station_origin_from_spec(spec)
+        if not entry:
+            continue
+        result[key] = entry
+    return result
+
+
 STATION_PRESETS = build_station_origin_map(STATION_LOCATIONS_RAW)
+OPERATOR_ORIGIN_OVERRIDES = build_operator_origin_map(OPERATOR_LOCATIONS_RAW)
+if OPERATOR_ORIGIN_OVERRIDES:
+    operator_origin_cache.update({k: copy.deepcopy(v) for k, v in OPERATOR_ORIGIN_OVERRIDES.items()})
 hub = Hub(initial_station_origins=STATION_PRESETS, primary_station_name=PRIMARY_STATION_NAME)
 
 # ---------- Status endpoints ----------

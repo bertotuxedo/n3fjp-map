@@ -17,6 +17,11 @@ STATION_LOCATIONS:
     lat: 34.932
     lon: -81.025
 
+# Optional operator home overrides (fallback if QRZ does not provide coordinates)
+OPERATOR_LOCATIONS:
+  "KD2WLN":
+    state: "NJ"
+
 # QRZ lookup (optional; can also be set via environment variables)
 QRZ_USERNAME: ""
 QRZ_PASSWORD: ""
