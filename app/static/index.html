@@ -16,6 +16,10 @@
     .sidebar h3 { margin:10px 0 6px; font-weight:600; font-size:13px; color:#a7b1c2; }
     .sidebar .box { background:#0b0f17; border:1px solid #1a2130; border-radius:10px; padding:10px; margin-bottom:12px; }
     .select { width:100%; background:#0b0f17; color:#e6e6e6; border:1px solid #1a2130; border-radius:8px; padding:6px 8px; }
+    .message-thread { display:flex; flex-direction:column; gap:8px; font-size:12px; color:#c6d3e6; max-height:calc((100vh - 52px) / 3); overflow-y:auto; }
+    .message-entry { border:1px solid #1a2130; border-radius:8px; padding:8px; background:#0c121c; }
+    .message-meta { font-size:11px; color:#8ea8c8; margin-bottom:4px; display:flex; justify-content:space-between; gap:6px; }
+    .message-body { white-space:pre-wrap; line-height:1.4; color:#e6eefc; }
     .main { position:relative; background:#0b0e12; }
     #map, #globeCanvas { position:absolute; inset:0; }
     #globeCanvas { display:none; } /* start on map */
@@ -77,6 +81,11 @@
         <div style="height:8px"></div>
         <label>Operator</label>
         <select id="operSel" class="select"><option value="">All</option></select>
+      </div>
+
+      <div class="box">
+        <h3>Message thread</h3>
+        <div id="messageThread" class="message-thread"></div>
       </div>
 
       <div class="box">
