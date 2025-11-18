@@ -94,9 +94,11 @@ BAND_FILTER = set([b.strip() for b in str(cfg_get("BAND_FILTER", "")).split(",")
 MODE_FILTER = set([m.strip().upper() for m in str(cfg_get("MODE_FILTER", "")).split(",") if m.strip()])
 
 HEARTBEAT_SECONDS = max(3, cfg_get("HEARTBEAT_SECONDS", 5))
+LIST_POLL_SECONDS = max(10, cfg_get("LIST_POLL_SECONDS", 60))
 
 PRIMARY_STATION_NAME = cfg_get("PRIMARY_STATION_NAME", "Primary Station")
 STATION_LOCATIONS_RAW = cfg_get("STATION_LOCATIONS", {})
+OPERATOR_LOCATIONS_RAW = cfg_get("OPERATOR_LOCATIONS", {})
 
 QRZ_USERNAME = cfg_get("QRZ_USERNAME", "")
 QRZ_PASSWORD = cfg_get("QRZ_PASSWORD", "")
@@ -191,6 +193,7 @@ class QRZClient:
         lon_s = callsign.get("lon") or callsign.get("longitude")
         grid = callsign.get("grid") or callsign.get("Grid")
         country = callsign.get("country") or callsign.get("Country")
+        state = callsign.get("state") or callsign.get("State") or callsign.get("addr2")
 
         dest: Optional[Dict[str, Any]] = None
         try:
@@ -210,10 +213,37 @@ class QRZClient:
             result["dest"] = dest
         if country:
             result["country"] = country
+        if state:
+            result["state"] = state
         return result or None
 
 
 qrz_client = QRZClient(QRZ_USERNAME, QRZ_PASSWORD, QRZ_AGENT)
+
+operator_origin_cache: Dict[str, Dict[str, Any]] = {}
+
+
+async def operator_origin_from_qrz(call: Optional[str]) -> Optional[Dict[str, Any]]:
+    canon = canonical_station_key(call)
+    if not canon:
+        return None
+    override = OPERATOR_ORIGIN_OVERRIDES.get(canon)
+    if override:
+        return copy.deepcopy(override)
+    cached = operator_origin_cache.get(canon)
+    if cached:
+        return copy.deepcopy(cached)
+
+    qrz_result = await qrz_client.lookup(canon)
+    if not qrz_result:
+        return None
+
+    dest = qrz_result.get("dest")
+    if not dest:
+        return None
+
+    operator_origin_cache[canon] = dest
+    return copy.deepcopy(dest)
 
 # ---------- FastAPI ----------
 app = FastAPI()
@@ -256,6 +286,8 @@ class Hub:
         self.sections_worked: Set[str] = set()
         self.countries_worked: Set[str] = set()
         self.station_origins: Dict[str, Dict[str, Any]] = {}
+        self.list_seen_keys: Deque[str] = deque(maxlen=500)
+        self.list_seen_index: Set[str] = set()
         # metrics
         self.metrics = {
             "frames_parsed_total": 0,
@@ -416,6 +448,18 @@ class Hub:
         entries.sort(key=lambda item: (item.get("name") or "").upper())
         return entries
 
+    def remember_list_entry(self, key: Optional[str]) -> bool:
+        if not key:
+            return False
+        if key in self.list_seen_index:
+            return False
+        if len(self.list_seen_keys) == self.list_seen_keys.maxlen:
+            oldest = self.list_seen_keys.popleft()
+            self.list_seen_index.discard(oldest)
+        self.list_seen_keys.append(key)
+        self.list_seen_index.add(key)
+        return True
+
     def _preload_station_origins(self, initial: Dict[str, Dict[str, Any]]):
         for key, entry in initial.items():
             if not entry:
@@ -493,6 +537,66 @@ class Hub:
 # ---------- Sections & countries (centroids only) ----------
 with open("static/data/centroids/sections.json", "r", encoding="utf-8") as f:
     SECTION_CENTROIDS: Dict[str, Dict[str, float]] = json.load(f)
+
+
+STATE_CENTROIDS: Dict[str, Dict[str, Any]] = {}
+STATE_ALIAS_INDEX: Dict[str, str] = {}
+
+
+def canonical_state_key(name: Optional[str]) -> Optional[str]:
+    if not name:
+        return None
+    normalized = unicodedata.normalize("NFD", str(name))
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    normalized = re.sub(r"[^0-9A-Za-z]+", " ", normalized)
+    normalized = normalized.strip().upper()
+    return normalized or None
+
+
+def resolve_state_key(name: Optional[str]) -> Optional[str]:
+    key = canonical_state_key(name)
+    if not key:
+        return None
+    if key in STATE_CENTROIDS:
+        return key
+    return STATE_ALIAS_INDEX.get(key)
+
+
+def state_centroid(name: Optional[str]) -> Optional[Dict[str, Any]]:
+    key = resolve_state_key(name)
+    if not key:
+        return None
+    info = STATE_CENTROIDS.get(key)
+    if not info:
+        return None
+    lat = info.get("lat")
+    lon = info.get("lon")
+    if lat is None or lon is None:
+        return None
+    dest = {"lat": lat, "lon": lon, "grid": None}
+    try:
+        dest["grid"] = maidenhead_from_latlon(lat, lon)
+    except Exception:
+        dest["grid"] = None
+    return dest
+
+
+try:
+    with open("static/data/centroids/us_states.json", "r", encoding="utf-8") as f:
+        STATE_CENTROIDS = json.load(f)
+    for abbr, info in STATE_CENTROIDS.items():
+        abbr_key = canonical_state_key(abbr)
+        if abbr_key:
+            STATE_ALIAS_INDEX.setdefault(abbr_key, abbr)
+        name_key = canonical_state_key(info.get("name"))
+        if name_key:
+            STATE_ALIAS_INDEX.setdefault(name_key, abbr)
+        for alias in info.get("aliases", []) or []:
+            alias_key = canonical_state_key(alias)
+            if alias_key:
+                STATE_ALIAS_INDEX.setdefault(alias_key, abbr)
+except Exception as exc:
+    logging.warning(f"Failed to load state centroids: {exc}")
 
 
 COUNTRY_CENTROIDS: Dict[str, Dict[str, Any]] = {}
@@ -606,6 +710,22 @@ def first_tag(text: str, *names: str) -> Optional[str]:
     return None
 
 
+def normalize_cmd_frame(text: str) -> str:
+    """Collapse whitespace inside tag names so broken wrappers still parse.
+
+    Some feeds include line breaks or padding inside tag names such as
+    ``</B  AND>``. This normalizes those occurrences to ``</BAND>`` so the
+    existing tag() helper can still locate values.
+    """
+
+    def _fix(match: re.Match) -> str:
+        slash = "/" if match.group(1) else ""
+        name = re.sub(r"\s+", "", match.group(2) or "")
+        return f"<{slash}{name}>"
+
+    return re.sub(r"<\s*(/?)\s*([A-Za-z0-9_\s]+)\s*>", _fix, text)
+
+
 STATION_NAME_TAGS = (
     "STATIONNAME",
     "THISSTATIONNAME",
@@ -629,6 +749,22 @@ def extract_station_name(text: str) -> Optional[str]:
             if cleaned:
                 return cleaned
     return None
+
+
+def split_list_entries(frame: str) -> List[str]:
+    """Split a single <CMD> frame that may contain multiple LISTRESPONSE entries."""
+    matches = list(re.finditer(r"<LISTRESPONSE>", frame, re.IGNORECASE))
+    if not matches:
+        return []
+    entries: List[str] = []
+    for i, match in enumerate(matches):
+        start = match.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(frame)
+        entry = frame[start:end]
+        # strip any trailing terminator in case the frame wrapper is included
+        entry = entry.split("</CMD>", 1)[0]
+        entries.append(entry)
+    return entries
 
 def parse_lon_west_positive(s: Optional[str]) -> Optional[float]:
     if s is None or s == "":
@@ -700,6 +836,9 @@ def _station_origin_from_spec(spec: Any) -> Optional[Dict[str, Any]]:
         text = spec.strip()
         if not text:
             return None
+        state_dest = state_centroid(text)
+        if state_dest:
+            return state_dest
         if re.fullmatch(r"[A-Za-z]{2}\d{2}[A-Za-z]{0,2}", text):
             coords = latlon_from_maidenhead(text)
             if coords:
@@ -731,6 +870,11 @@ def _station_origin_from_spec(spec: Any) -> Optional[Dict[str, Any]]:
             if coords:
                 coords["grid"] = str(grid).upper()
                 return coords
+        state_val = spec.get("state") or spec.get("State")
+        if state_val:
+            dest = state_centroid(state_val)
+            if dest:
+                return dest
     return None
 
 
@@ -750,7 +894,25 @@ def build_station_origin_map(raw: Any) -> Dict[str, Dict[str, Any]]:
     return result
 
 
+def build_operator_origin_map(raw: Any) -> Dict[str, Dict[str, Any]]:
+    result: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return result
+    for name, spec in raw.items():
+        key = canonical_station_key(name)
+        if not key:
+            continue
+        entry = _station_origin_from_spec(spec)
+        if not entry:
+            continue
+        result[key] = entry
+    return result
+
+
 STATION_PRESETS = build_station_origin_map(STATION_LOCATIONS_RAW)
+OPERATOR_ORIGIN_OVERRIDES = build_operator_origin_map(OPERATOR_LOCATIONS_RAW)
+if OPERATOR_ORIGIN_OVERRIDES:
+    operator_origin_cache.update({k: copy.deepcopy(v) for k, v in OPERATOR_ORIGIN_OVERRIDES.items()})
 hub = Hub(initial_station_origins=STATION_PRESETS, primary_station_name=PRIMARY_STATION_NAME)
 
 # ---------- Status endpoints ----------
@@ -803,7 +965,7 @@ def _extract_one_frame(buffer: bytearray) -> Optional[str]:
     if end == -1: return None
     rec_bytes = buffer[start + 5 : end]
     del buffer[: end + 6]
-    return rec_bytes.decode(errors="ignore")
+    return normalize_cmd_frame(rec_bytes.decode(errors="ignore"))
 
 async def _send(writer: asyncio.StreamWriter, cmd: str):
     writer.write((cmd + "\r\n").encode())
@@ -819,10 +981,24 @@ async def _heartbeat(writer: asyncio.StreamWriter):
     except Exception as e:
         logging.info(f"Heartbeat ended: {e}")
 
+
+async def _poll_recent(writer: asyncio.StreamWriter):
+    try:
+        while True:
+            await _send(writer, "<CMD><LIST><INCLUDEALL><VALUE>20</VALUE></CMD>")
+            await asyncio.sleep(LIST_POLL_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logging.info(f"Recent poller ended: {e}")
+
 # ---------- N3FJP TCP client task ----------
 async def n3fjp_client():
     await asyncio.sleep(1)
     while True:
+        writer: Optional[asyncio.StreamWriter] = None
+        hb_task: Optional[asyncio.Task] = None
+        poll_task: Optional[asyncio.Task] = None
         try:
             logging.info(f"Connecting to N3FJP at {N3FJP_HOST}:{N3FJP_PORT} ...")
             reader, writer = await asyncio.open_connection(N3FJP_HOST, N3FJP_PORT)
@@ -837,6 +1013,7 @@ async def n3fjp_client():
             await _send(writer, "<CMD><OPINFO></CMD>")
 
             hb_task = asyncio.create_task(_heartbeat(writer))
+            poll_task = asyncio.create_task(_poll_recent(writer))
             buf = bytearray()
             last_emit = 0.0
 
@@ -895,6 +1072,89 @@ async def n3fjp_client():
                                 hub.origin = origin
                                 await hub.broadcast({"type": "origin", "data": hub.origin_payload()})
                                 await hub.broadcast({"type": "status", "data": hub.compose_status()})
+                        continue
+
+                    # Periodic LIST polling responses
+                    if "LISTRESPONSE" in recU:
+                        entries = split_list_entries(rec)
+                        if not entries:
+                            entries = [rec]
+
+                        for entry in entries:
+                            list_key = tag(entry, "FLDPRIMARYKEY") or tag(entry, "PRIMARYKEY")
+                            if list_key and not hub.remember_list_entry(list_key):
+                                continue
+
+                            call = tag(entry, "CALL")
+                            band = tag(entry, "BAND")
+                            mode = (tag(entry, "MODE") or tag(entry, "MODETEST") or "").upper()
+                            sect = (first_tag(entry, "SECTION", "SPCNUM", "ARRL_SECT") or "").upper()
+                            oper = tag(entry, "FLDOPERATOR") or tag(entry, "OPERATOR") or tag(entry, "MYCALL") or ""
+                            country = tag(entry, "COUNTRY") or tag(entry, "COUNTRYWORKED") or ""
+                            station_name = tag(entry, "FLDSTATION") or extract_station_name(entry)
+
+                            if oper and oper not in hub.operators_seen:
+                                hub.operators_seen.add(oper)
+                                await hub.broadcast({"type": "operators", "data": sorted(hub.operators_seen)})
+
+                            base_meta = {
+                                "call": call,
+                                "band": band,
+                                "mode": mode,
+                                "section": sect,
+                                "operator": oper,
+                            }
+                            if station_name:
+                                base_meta["station"] = station_name
+                            if country:
+                                base_meta["country"] = country
+
+                            station_origin = hub.get_station_origin(station_name)
+
+                            tlat_s = tag(entry, "LAT")
+                            tlon_s = first_tag(entry, "LON", "LONG")
+                            dest = None
+
+                            if (WFD_MODE or PREFER_SECTION_ALWAYS) and sect:
+                                sec = section_to_latlon(sect)
+                                if sec:
+                                    dest = {"lat": sec["lat"], "lon": sec["lon"], "grid": None}
+
+                            if not dest and tlat_s and tlon_s:
+                                lat = float(tlat_s); lon = parse_lon_west_positive(tlon_s)
+                                if lon is not None:
+                                    dest = {"lat": lat, "lon": lon, "grid": None}
+
+                            if not dest and call:
+                                dx_flag = parse_bool(tag(entry, "DX"))
+                                if dx_flag is None:
+                                    dx_flag = bool(country and "USA" not in country.upper() and "UNITED STATES" not in country.upper())
+                                if dx_flag:
+                                    qrz_result = await qrz_client.lookup(call)
+                                    if qrz_result:
+                                        qrz_country = qrz_result.get("country")
+                                        if qrz_country:
+                                            base_meta["country"] = qrz_country
+                                        qrz_dest = qrz_result.get("dest")
+                                        if qrz_dest and qrz_dest.get("lat") is not None and qrz_dest.get("lon") is not None:
+                                            dest = qrz_dest
+                                        if not dest:
+                                            centroid = country_centroid(base_meta.get("country") or qrz_country)
+                                            if centroid:
+                                                dest = centroid
+
+                            if not dest and base_meta.get("country"):
+                                centroid = country_centroid(base_meta.get("country"))
+                                if centroid:
+                                    dest = centroid
+
+                            origin_override = station_origin
+                            operator_origin = await operator_origin_from_qrz(oper)
+                            if operator_origin:
+                                origin_override = operator_origin
+
+                            if dest:
+                                await hub.emit_path(dest, base_meta, TTL_SECONDS, origin_override=origin_override)
                         continue
 
                     # Draw ONLY on ENTEREVENT (submit)
@@ -1014,6 +1274,16 @@ async def n3fjp_client():
             hub.state.update(connected=False, last_disconnect_ts=time.time(), last_error=str(e))
             await hub.broadcast({"type": "status", "data": hub.compose_status()})
             await asyncio.sleep(2)
+        finally:
+            for t in (hb_task, poll_task):
+                if t:
+                    t.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await t
+            if writer:
+                writer.close()
+                with contextlib.suppress(Exception):
+                    await writer.wait_closed()
 
 @app.on_event("startup")
 async def startup_event():
