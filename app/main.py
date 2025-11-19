@@ -123,6 +123,22 @@ class QRZClient:
         self.session_key: Optional[str] = None
         self.session_expiry: float = 0.0
         self.lock = asyncio.Lock()
+        self.last_login_attempt: float = 0.0
+        self.last_login_success: float = 0.0
+        self.last_login_error: Optional[str] = None
+
+    @property
+    def connected(self) -> bool:
+        return bool(self.session_key and time.time() < self.session_expiry)
+
+    def status(self) -> Dict[str, Any]:
+        return {
+            "configured": bool(self.username and self.password),
+            "connected": self.connected,
+            "last_attempt_ts": self.last_login_attempt or None,
+            "last_success_ts": self.last_login_success or None,
+            "last_error": self.last_login_error,
+        }
 
     async def _login(self) -> None:
         if not self.username or not self.password:
@@ -130,6 +146,7 @@ class QRZClient:
         async with self.lock:
             if self.session_key and time.time() < self.session_expiry:
                 return
+            self.last_login_attempt = time.time()
             params = {
                 "username": self.username,
                 "password": self.password,
@@ -146,11 +163,15 @@ class QRZClient:
                     self.session_key = key
                     # QRZ sessions expire after a period; refresh periodically.
                     self.session_expiry = time.time() + 10 * 60
+                    self.last_login_success = self.last_login_attempt
+                    self.last_login_error = None
                 else:
                     self.session_key = None
+                    self.last_login_error = session.get("Error", "QRZ session missing key")
             except Exception as e:
                 logging.warning(f"QRZ login failed: {e}")
                 self.session_key = None
+                self.last_login_error = str(e)
 
     async def lookup(self, call: Optional[str]) -> Optional[Dict[str, Any]]:
         if not call:
@@ -175,10 +196,12 @@ class QRZClient:
             if e.response.status_code == 403:
                 # session likely expired
                 self.session_key = None
+                self.last_login_error = "QRZ authentication rejected"
             logging.warning(f"QRZ lookup HTTP error for {call}: {e}")
             return None
         except Exception as e:
             logging.warning(f"QRZ lookup failed for {call}: {e}")
+            self.last_login_error = str(e)
             return None
 
         root = data.get("QRZDatabase", {})
@@ -345,6 +368,7 @@ class Hub:
             "prefer_section": PREFER_SECTION_ALWAYS,
             "ttl_seconds": TTL_SECONDS,
             "broadcast_messages": list(self.broadcast_messages),
+            "qrz": qrz_client.status(),
         }
 
     async def add_broadcast_message(self, message: Optional[Dict[str, Any]]):
