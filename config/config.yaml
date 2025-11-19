@@ -23,13 +23,6 @@ OPERATOR_LOCATIONS:
   "KD2UCJ":
     state: "NY"
 
-# QRZ lookup (optional)
-# Leave these blank here if you prefer to provide them via `.env` (loaded by docker-compose)
-# so secrets stay out of source control. Environment variables will override these defaults.
-QRZ_USERNAME: kd2ucj
-QRZ_PASSWORD: 
-QRZ_AGENT: "n3fjp-map"
-
 # Optional server-side filters (comma-separated)
 # Example: "20,40,80"
 BAND_FILTER: ""
