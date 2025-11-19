@@ -11,6 +11,16 @@
     .pill { padding:3px 8px; border-radius:999px; font-size:12px; }
     .pill.ok { background:#10381a; color:#6be07e;}
     .pill.bad{ background:#3a1414; color:#ff7a7a;}
+    .status-chip { display:inline-flex; align-items:center; gap:8px; padding:4px 10px; border-radius:999px; border:1px solid #1a2130; background:#0b0f17; font-size:12px; color:#c7d6ea; }
+    .status-chip .dot { width:10px; height:10px; border-radius:50%; box-shadow:0 0 0 2px #0b0f17; background:#8ea8c8; }
+    .status-chip.ok   { color:#6be07e; border-color:#1f3a25; background:#10381a; }
+    .status-chip.ok .dot { background:#6be07e; box-shadow:0 0 0 2px #10381a; }
+    .status-chip.warn { color:#f2e08a; border-color:#514320; background:#2b2414; }
+    .status-chip.warn .dot { background:#f2e08a; box-shadow:0 0 0 2px #2b2414; }
+    .status-chip.bad  { color:#ff9ea0; border-color:#442024; background:#2d1619; }
+    .status-chip.bad .dot { background:#ff7a7a; box-shadow:0 0 0 2px #2d1619; }
+    .status-chip.off  { color:#a3b0c7; border-color:#1a2130; background:#0b0f17; }
+    .status-chip.off .dot { background:#596883; box-shadow:0 0 0 2px #0b0f17; }
     .grid { display:grid; grid-template-columns: 320px 1fr; gap:0; height: calc(100vh - 52px); }
     .sidebar { background:#0f141d; border-right:1px solid #1d2330; padding:12px; overflow:auto; }
     .sidebar h3 { margin:10px 0 6px; font-weight:600; font-size:13px; color:#a7b1c2; }
@@ -51,6 +61,11 @@
       <button id="btnGlobe">Globe</button>
     </div>
     <span class="pill" id="connPill">Connecting…</span>
+    <div class="status-chip warn" id="qrzStatus" title="QRZ API connectivity">
+      <span class="dot" id="qrzDot"></span>
+      <span>QRZ</span>
+      <strong id="qrzStatusText">Pending…</strong>
+    </div>
     <span>Program: <strong id="prog">—</strong></span>
     <span>API: <strong id="api">—</strong></span>
     <span>Origin: <strong id="originTxt">—</strong></span>
