@@ -83,7 +83,7 @@ BAND_FILTER: ""               # e.g. "20,40,80"
 MODE_FILTER: ""               # e.g. "PH,CW"
 ```
 
-Configuration values in the YAML file take precedence over environment variables. After editing the file, restart the container to apply the changes.
+Configuration values in the YAML file take precedence over environment variables (including values loaded from `.env` by Docker Compose). After editing the file, restart the container to apply the changes. The QRZ credentials are included in the YAML only as placeholders—leave them blank if you want to supply secrets exclusively via `.env`.
 
 `STATION_LOCATIONS` is optional but highly recommended when you network multiple PCs via N3FJP's File Share or TCP methods. Each key should match the "Station Name" you configure in the Network Status Display form, and you can supply either a Maidenhead grid or explicit `lat`/`lon` coordinates. The UI will show a marker for every configured station so arcs originate from the correct location even when contacts are logged remotely. `PRIMARY_STATION_NAME` controls the label for the machine hosting the TCP API.
 
