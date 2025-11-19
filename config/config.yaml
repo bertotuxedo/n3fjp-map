@@ -8,21 +8,23 @@ PREFER_SECTION_ALWAYS: false   # force all to section centroids if true
 TTL_SECONDS: 600               # how long a path persists (s)
 HEARTBEAT_SECONDS: 5           # how often to ping APIVER for liveness
 
-# Station identity / optional remote origins
-PRIMARY_STATION_NAME: "Run 1"
+# Station identity / optional remote origins // this is for bubbles
+PRIMARY_STATION_NAME: "CALLSIGN"
 STATION_LOCATIONS:
-  "Run 1":
+  "CALLSIGN":
     grid: "FN31pr"
   "GOTA":
     lat: 34.932
     lon: -81.025
 
-# Optional operator home overrides (fallback if QRZ does not provide coordinates)
+# Optional operator home overrides (fallback if QRZ does not provide coordinates) // this is for arcs
 OPERATOR_LOCATIONS:
-  "KD2WLN":
+  "CALLSIGN":
     state: "NJ"
 
-# QRZ lookup (optional; can also be set via environment variables)
+# QRZ lookup (optional)
+# Leave these blank here if you prefer to provide them via `.env` (loaded by docker-compose)
+# so secrets stay out of source control. Environment variables will override these defaults.
 QRZ_USERNAME: ""
 QRZ_PASSWORD: ""
 QRZ_AGENT: "n3fjp-map"
@@ -34,5 +36,5 @@ BAND_FILTER: ""
 MODE_FILTER: ""
 
 # Notes:
-# - These values override environment variables if both are set.
-# - Change, then restart the container to apply.
+# - Values defined here override environment variables (including those from `.env`) if both are set.
+# - If you change this file, restart the container to apply.
