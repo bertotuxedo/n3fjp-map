@@ -1068,7 +1068,7 @@ function renderQrzStatus(data){
 
   let cls = 'status-chip off';
   let label = 'QRZ disabled';
-  let title = 'QRZ credentials are not configured.';
+  let title = 'QRZ credentials are not configured. Set QRZ_USERNAME/QRZ_PASSWORD in the .env used by docker-compose.yaml.';
 
   if (configured && connected){
     cls = 'status-chip ok';

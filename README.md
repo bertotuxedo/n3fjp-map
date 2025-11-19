@@ -27,7 +27,7 @@ Real-time map and globe visualization for stations logging contacts with the N3F
    cd n3fjp-map
    ```
 2. Adjust `config/config.yaml` for your station (see [Configuration](#configuration)).
-3. (Optional but recommended) Create a `.env` file in the repo root for secrets such as QRZ credentials:
+3. (Optional but recommended) Create a `.env` file in the repo root for secrets such as QRZ credentials (these are consumed by `docker-compose.yaml`). You can start from `.env.example`:
    ```bash
    echo "QRZ_USERNAME=your_callsign" >> .env
    echo "QRZ_PASSWORD=your_password" >> .env
@@ -73,24 +73,19 @@ STATION_LOCATIONS:
     lat: 34.932
     lon: -81.025
 
-# QRZ lookup (optional)
-QRZ_USERNAME: ""
-QRZ_PASSWORD: ""
-QRZ_AGENT: "n3fjp-map"
-
 # Optional server-side filters (comma-separated)
 BAND_FILTER: ""               # e.g. "20,40,80"
 MODE_FILTER: ""               # e.g. "PH,CW"
 ```
 
-Configuration values in the YAML file take precedence over environment variables (including values loaded from `.env` by Docker Compose). After editing the file, restart the container to apply the changes. The QRZ credentials are included in the YAML only as placeholders—leave them blank if you want to supply secrets exclusively via `.env`.
+Configuration values in the YAML file take precedence over environment variables (including values loaded from `.env` by Docker Compose). After editing the file, restart the container to apply the changes.
 
 `STATION_LOCATIONS` is optional but highly recommended when you network multiple PCs via N3FJP's File Share or TCP methods. Each key should match the "Station Name" you configure in the Network Status Display form, and you can supply either a Maidenhead grid or explicit `lat`/`lon` coordinates. The UI will show a marker for every configured station so arcs originate from the correct location even when contacts are logged remotely. `PRIMARY_STATION_NAME` controls the label for the machine hosting the TCP API.
 
 ### Environment variables
 You can override most configuration keys using environment variables (matching the YAML keys). The compose file sets `CONFIG_FILE=/config/config.yaml` so the application loads your YAML configuration automatically. Additional useful variables include:
 
-- `QRZ_USERNAME`, `QRZ_PASSWORD`, `QRZ_AGENT` — credentials for QRZ.com lookups.
+- `QRZ_USERNAME`, `QRZ_PASSWORD`, `QRZ_AGENT` — credentials for QRZ.com lookups (set in `.env` and wired through `docker-compose.yaml`).
 - `TTL_SECONDS`, `BAND_FILTER`, `MODE_FILTER` — control visibility and filtering.
 
 For local overrides without editing the compose file, create a `.env` file and set your variables before running `docker compose`.
@@ -100,7 +95,7 @@ The Docker Compose definition now loads both configuration sources so everything
 
 - The `/config/config.yaml` volume is mounted read-only and pointed to via `CONFIG_FILE` so the service always reads the YAML options you commit to source control.
 - The `.env` file (if present) is loaded via `env_file` and feeds sensitive values like `QRZ_USERNAME`/`QRZ_PASSWORD` into the container without hard-coding them in the YAML file.
-- Environment variables set by `.env` override the YAML values for QRZ settings, letting you keep credentials out of version control while still enabling lookups.
+- Environment variables set by `.env` supply the QRZ settings—`config/config.yaml` no longer includes those keys so secrets stay outside version control.
 
 This holistic setup ensures your static config, runtime secrets, and container wiring stay aligned without manual edits in multiple places.
 
