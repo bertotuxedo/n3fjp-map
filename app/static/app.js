@@ -8,6 +8,8 @@ const originTxt  = document.getElementById('originTxt');
 const lastEvt    = document.getElementById('lastEvt');
 const workedCount= document.getElementById('workedCount');
 const countriesCount = document.getElementById('countriesCount');
+const qrzStatus  = document.getElementById('qrzStatus');
+const qrzStatusText = document.getElementById('qrzStatusText');
 const recentBox  = document.getElementById('recentBox');
 const messageThread = document.getElementById('messageThread');
 const bandSel    = document.getElementById('bandSel');
@@ -1056,6 +1058,45 @@ if (recentBox) recentBox.addEventListener('click', (ev)=>{ if (ev.target === rec
 });
 
 // ---------- Status & WS ----------
+function renderQrzStatus(data){
+  if (!qrzStatus || !qrzStatusText) return;
+  const configured = !!(data && data.configured);
+  const connected = !!(data && data.connected);
+  const lastError = data?.last_error;
+  const attempted = !!data?.last_attempt_ts;
+  const hadSuccess = !!data?.last_success_ts;
+
+  let cls = 'status-chip off';
+  let label = 'QRZ disabled';
+  let title = 'QRZ credentials are not configured.';
+
+  if (configured && connected){
+    cls = 'status-chip ok';
+    label = 'QRZ connected';
+    title = 'Authenticated with the QRZ XML API.';
+  } else if (configured && hadSuccess){
+    cls = 'status-chip warn';
+    label = 'QRZ idle';
+    title = 'Previously authenticated; will reconnect on the next lookup.';
+  } else if (configured && lastError){
+    cls = 'status-chip bad';
+    label = 'QRZ error';
+    title = `Last login failure: ${lastError}`;
+  } else if (configured && attempted){
+    cls = 'status-chip warn';
+    label = 'QRZ unreachable';
+    title = 'Credentials are set but a session has not been established yet.';
+  } else if (configured){
+    cls = 'status-chip warn';
+    label = 'QRZ pending';
+    title = 'Waiting for the first QRZ login attempt.';
+  }
+
+  qrzStatus.className = `${cls}`;
+  qrzStatusText.textContent = label;
+  qrzStatus.title = title;
+}
+
 function updateOperators(list){
   const cur=operSel.value;
   operSel.innerHTML='<option value="">All</option>';
@@ -1071,6 +1112,7 @@ async function refreshStatus(){
     else { connPill.textContent='Disconnected'; connPill.className='pill bad'; }
     prog.textContent=s.program || '—';
     api.textContent=s.apiver || '—';
+    renderQrzStatus(s.qrz);
     if (typeof s.primary_station_name === 'string' && s.primary_station_name.trim()) primaryStationName = s.primary_station_name;
     if (Array.isArray(s.station_origins)){
       applyStationOriginList(s.station_origins);
@@ -1105,6 +1147,7 @@ ws.onmessage = (ev)=>{
       const s=msg.data;
       if (s.program) prog.textContent=s.program;
       if (s.apiver)  api.textContent=s.apiver;
+      if (s.qrz) renderQrzStatus(s.qrz);
       if (s.last_event_ts) lastEvt.textContent=new Date(s.last_event_ts*1000).toLocaleString();
       if (typeof s.primary_station_name === 'string' && s.primary_station_name.trim()) primaryStationName = s.primary_station_name;
       if (Array.isArray(s.station_origins)) applyStationOriginList(s.station_origins);
