@@ -25,9 +25,12 @@ OPERATOR_LOCATIONS:
 # QRZ lookup (optional)
 # Leave these blank here if you prefer to provide them via `.env` (loaded by docker-compose)
 # so secrets stay out of source control. Environment variables will override these defaults.
+# QRZ_AGENT is sent as the User-Agent header to satisfy QRZ identification requirements.
 QRZ_USERNAME: ""
 QRZ_PASSWORD: ""
 QRZ_AGENT: "n3fjp-map"
+# Logbook API access key (KEY from QRZ logbook settings) for STATUS/FETCH/etc.
+QRZ_LOGBOOK_KEY: ""
 
 # Optional server-side filters (comma-separated)
 # Example: "20,40,80"

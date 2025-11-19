@@ -31,7 +31,8 @@ Real-time map and globe visualization for stations logging contacts with the N3F
    ```bash
    echo "QRZ_USERNAME=your_callsign" >> .env
    echo "QRZ_PASSWORD=your_password" >> .env
-   echo "QRZ_AGENT=n3fjp-map" >> .env
+   echo "QRZ_AGENT=n3fjp-map/1.0 (YOURCALL)" >> .env
+   echo "QRZ_LOGBOOK_KEY=your_logbook_access_key" >> .env
    ```
 4. Launch the stack:
    ```bash
@@ -77,6 +78,8 @@ STATION_LOCATIONS:
 QRZ_USERNAME: ""
 QRZ_PASSWORD: ""
 QRZ_AGENT: "n3fjp-map"
+# QRZ Logbook API (KEY from QRZ logbook settings)
+QRZ_LOGBOOK_KEY: ""
 
 # Optional server-side filters (comma-separated)
 BAND_FILTER: ""               # e.g. "20,40,80"
@@ -91,6 +94,7 @@ Configuration values in the YAML file take precedence over environment variables
 You can override most configuration keys using environment variables (matching the YAML keys). The compose file sets `CONFIG_FILE=/config/config.yaml` so the application loads your YAML configuration automatically. Additional useful variables include:
 
 - `QRZ_USERNAME`, `QRZ_PASSWORD`, `QRZ_AGENT` — credentials for QRZ.com lookups.
+- `QRZ_LOGBOOK_KEY` — the API access key for the QRZ Logbook REST endpoint.
 - `TTL_SECONDS`, `BAND_FILTER`, `MODE_FILTER` — control visibility and filtering.
 
 For local overrides without editing the compose file, create a `.env` file and set your variables before running `docker compose`.
@@ -137,6 +141,10 @@ On the Windows host running your N3FJP logger:
 
 ## QRZ.com integration
 If QRZ credentials are supplied, the app performs lookups for non-local stations to supplement grid and location data. Sessions are cached and refreshed automatically; missing or invalid credentials simply skip QRZ lookups.
+
+When a QRZ Logbook API key is provided, the backend periodically issues `ACTION=STATUS` POST requests to `https://logbook.qrz.com/api` with your `KEY` and an identifying `User-Agent` header. This satisfies the QRZ developer guide requirements and drives the QRZ connectivity chip in the UI.
+
+> Tip: use an agent string under 128 characters that includes your callsign, e.g. `n3fjp-map/1.0 (VA7XYZ)`.
 
 ## Troubleshooting tips
 - Ensure the Docker host can reach the Windows machine on the TCP port (default `1100`).

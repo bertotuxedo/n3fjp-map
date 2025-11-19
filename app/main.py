@@ -103,7 +103,8 @@ OPERATOR_LOCATIONS_RAW = cfg_get("OPERATOR_LOCATIONS", {})
 
 QRZ_USERNAME = cfg_get("QRZ_USERNAME", "")
 QRZ_PASSWORD = cfg_get("QRZ_PASSWORD", "")
-QRZ_AGENT = cfg_get("QRZ_AGENT", "n3fjp-map") or "n3fjp-map"
+QRZ_AGENT = (cfg_get("QRZ_AGENT", "n3fjp-map") or "n3fjp-map")[:128]
+QRZ_LOGBOOK_KEY = cfg_get("QRZ_LOGBOOK_KEY", "")
 
 
 def canonical_station_key(name: Optional[str]) -> Optional[str]:
@@ -119,7 +120,7 @@ class QRZClient:
     def __init__(self, username: str, password: str, agent: str):
         self.username = (username or "").strip()
         self.password = (password or "").strip()
-        self.agent = (agent or "n3fjp-map").strip() or "n3fjp-map"
+        self.agent = (agent or "n3fjp-map").strip()[:128] or "n3fjp-map"
         self.session_key: Optional[str] = None
         self.session_expiry: float = 0.0
         self.lock = asyncio.Lock()
@@ -153,7 +154,7 @@ class QRZClient:
                 "agent": self.agent,
             }
             try:
-                async with httpx.AsyncClient(timeout=10) as client:
+                async with httpx.AsyncClient(timeout=10, headers={"User-Agent": self.agent}) as client:
                     resp = await client.get("https://xmldata.qrz.com/xml/current/", params=params)
                 resp.raise_for_status()
                 data = xmltodict.parse(resp.text)
@@ -188,7 +189,7 @@ class QRZClient:
             "agent": self.agent,
         }
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with httpx.AsyncClient(timeout=10, headers={"User-Agent": self.agent}) as client:
                 resp = await client.get("https://xmldata.qrz.com/xml/current/", params=params)
             resp.raise_for_status()
             data = xmltodict.parse(resp.text)
@@ -243,6 +244,69 @@ class QRZClient:
 
 
 qrz_client = QRZClient(QRZ_USERNAME, QRZ_PASSWORD, QRZ_AGENT)
+class QRZLogbookClient:
+    def __init__(self, access_key: str, agent: str):
+        self.access_key = (access_key or "").strip()
+        self.agent = (agent or "n3fjp-map").strip()[:128] or "n3fjp-map"
+        self.lock = asyncio.Lock()
+        self.last_result: Optional[str] = None
+        self.last_reason: Optional[str] = None
+        self.last_check_ts: float = 0.0
+        self.last_data: Optional[str] = None
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.access_key)
+
+    @property
+    def connected(self) -> bool:
+        return (self.last_result or "").upper() == "OK"
+
+    def status(self) -> Dict[str, Any]:
+        return {
+            "configured": self.configured,
+            "connected": self.connected,
+            "last_result": self.last_result,
+            "last_reason": self.last_reason,
+            "last_check_ts": self.last_check_ts or None,
+            "last_data": self.last_data,
+        }
+
+    @staticmethod
+    def _parse_pairs(text: str) -> Dict[str, str]:
+        result: Dict[str, str] = {}
+        if not text:
+            return result
+        for part in text.strip().split("&"):
+            if not part or "=" not in part:
+                continue
+            k, v = part.split("=", 1)
+            result[k.strip()] = v.strip()
+        return result
+
+    async def check_status(self) -> None:
+        if not self.configured:
+            return
+        async with self.lock:
+            payload = {"KEY": self.access_key, "ACTION": "STATUS"}
+            try:
+                async with httpx.AsyncClient(timeout=10, headers={"User-Agent": self.agent}) as client:
+                    resp = await client.post("https://logbook.qrz.com/api", data=payload)
+                resp.raise_for_status()
+                parsed = self._parse_pairs(resp.text)
+                self.last_result = parsed.get("RESULT")
+                self.last_reason = parsed.get("REASON")
+                self.last_data = parsed.get("DATA")
+            except Exception as e:
+                logging.warning(f"QRZ logbook status check failed: {e}")
+                self.last_result = "ERROR"
+                self.last_reason = str(e)
+                self.last_data = None
+            finally:
+                self.last_check_ts = time.time()
+
+
+qrz_logbook_client = QRZLogbookClient(QRZ_LOGBOOK_KEY, QRZ_AGENT)
 
 operator_origin_cache: Dict[str, Dict[str, Any]] = {}
 
@@ -369,6 +433,7 @@ class Hub:
             "ttl_seconds": TTL_SECONDS,
             "broadcast_messages": list(self.broadcast_messages),
             "qrz": qrz_client.status(),
+            "qrz_logbook": qrz_logbook_client.status(),
         }
 
     async def add_broadcast_message(self, message: Optional[Dict[str, Any]]):
@@ -999,6 +1064,16 @@ if OPERATOR_ORIGIN_OVERRIDES:
     operator_origin_cache.update({k: copy.deepcopy(v) for k, v in OPERATOR_ORIGIN_OVERRIDES.items()})
 hub = Hub(initial_station_origins=STATION_PRESETS, primary_station_name=PRIMARY_STATION_NAME)
 
+
+async def qrz_logbook_monitor():
+    while True:
+        try:
+            await qrz_logbook_client.check_status()
+            await hub.broadcast({"type": "status", "data": hub.compose_status()})
+        except Exception as e:
+            logging.warning(f"QRZ logbook monitor error: {e}")
+        await asyncio.sleep(600 if qrz_logbook_client.configured else 900)
+
 # ---------- Status endpoints ----------
 @app.get("/status")
 async def status():
@@ -1378,6 +1453,7 @@ async def n3fjp_client():
 @app.on_event("startup")
 async def startup_event():
     app.state.n3fjp_task = asyncio.create_task(n3fjp_client())
+    app.state.qrz_logbook_task = asyncio.create_task(qrz_logbook_monitor())
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -1386,3 +1462,8 @@ async def shutdown_event():
         t.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await t
+    lt = getattr(app.state, "qrz_logbook_task", None)
+    if lt and not lt.done():
+        lt.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await lt

@@ -16,3 +16,4 @@ services:
       QRZ_USERNAME: ${QRZ_USERNAME:-}
       QRZ_PASSWORD: ${QRZ_PASSWORD:-}
       QRZ_AGENT: ${QRZ_AGENT:-n3fjp-map}
+      QRZ_LOGBOOK_KEY: ${QRZ_LOGBOOK_KEY:-}
