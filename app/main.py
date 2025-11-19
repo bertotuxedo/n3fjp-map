@@ -101,9 +101,11 @@ PRIMARY_STATION_NAME = cfg_get("PRIMARY_STATION_NAME", "Primary Station")
 STATION_LOCATIONS_RAW = cfg_get("STATION_LOCATIONS", {})
 OPERATOR_LOCATIONS_RAW = cfg_get("OPERATOR_LOCATIONS", {})
 
-QRZ_USERNAME = cfg_get("QRZ_USERNAME", "")
-QRZ_PASSWORD = cfg_get("QRZ_PASSWORD", "")
-QRZ_AGENT = cfg_get("QRZ_AGENT", "n3fjp-map") or "n3fjp-map"
+# QRZ credentials are injected via docker-compose environment variables (see docker-compose.yaml)
+# rather than config/config.yaml to keep secrets out of version control.
+QRZ_USERNAME = os.getenv("QRZ_USERNAME", "")
+QRZ_PASSWORD = os.getenv("QRZ_PASSWORD", "")
+QRZ_AGENT = os.getenv("QRZ_AGENT", "n3fjp-map") or "n3fjp-map"
 
 
 def canonical_station_key(name: Optional[str]) -> Optional[str]:
