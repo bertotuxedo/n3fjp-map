@@ -9,24 +9,25 @@ TTL_SECONDS: 600               # how long a path persists (s)
 HEARTBEAT_SECONDS: 5           # how often to ping APIVER for liveness
 
 # Station identity / optional remote origins // this is for bubbles
-PRIMARY_STATION_NAME: "CALLSIGN"
-STATION_LOCATIONS:
-  "CALLSIGN":
-    grid: "FN31pr"
-  "GOTA":
-    lat: 34.932
-    lon: -81.025
+PRIMARY_STATION_NAME: "KD2UCJ"
+#STATION_LOCATIONS:
+#  "N3OG":
+#   grid: "EL96mk"
+
+#  "GOTA":
+#    lat: 43.9
+#    lon: -75.9
 
 # Optional operator home overrides (fallback if QRZ does not provide coordinates) // this is for arcs
 OPERATOR_LOCATIONS:
-  "CALLSIGN":
-    state: "NJ"
+  "KD2UCJ":
+    state: "NY"
 
 # QRZ lookup (optional)
 # Leave these blank here if you prefer to provide them via `.env` (loaded by docker-compose)
 # so secrets stay out of source control. Environment variables will override these defaults.
-QRZ_USERNAME: ""
-QRZ_PASSWORD: ""
+QRZ_USERNAME: kd2ucj
+QRZ_PASSWORD: 
 QRZ_AGENT: "n3fjp-map"
 
 # Optional server-side filters (comma-separated)
