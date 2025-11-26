@@ -1,5 +1,5 @@
 # N3FJP TCP server location
-N3FJP_HOST: "192.168.1.123"
+N3FJP_HOST: "192.168.1.189"
 N3FJP_PORT: 1100
 
 # Behavior
@@ -20,8 +20,8 @@ PRIMARY_STATION_NAME: "KD2UCJ"
 
 # Optional operator home overrides (fallback if QRZ does not provide coordinates) // this is for arcs
 OPERATOR_LOCATIONS:
-  "KD2UCJ":
-    state: "NY"
+#  "KD2UCJ":
+#    state: "NY"
 
 # Optional server-side filters (comma-separated)
 # Example: "20,40,80"

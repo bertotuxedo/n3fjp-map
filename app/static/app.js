@@ -107,6 +107,7 @@ function updateOriginSummary(){
 
 function upsertStationMarker(info){
   if (!info || !Number.isFinite(info.lat) || !Number.isFinite(info.lon)) return;
+  const originPane = ensureStationOriginPane();
   let marker = stationOriginMarkers.get(info.key);
   const tooltip = `${info.name}${info.grid ? ' • ' + info.grid : ''}`;
   if (!marker){
@@ -116,6 +117,7 @@ function upsertStationMarker(info){
       weight: 2,
       fillColor: '#38bdf8',
       fillOpacity: 0.9,
+      pane: 'stationOriginPane',
     }).addTo(map);
     marker.bindTooltip(tooltip, { direction:'top' });
     stationOriginMarkers.set(info.key, marker);
@@ -124,6 +126,11 @@ function upsertStationMarker(info){
     const tt = marker.getTooltip && marker.getTooltip();
     if (tt) tt.setContent(tooltip);
   }
+  if (marker.bringToFront) marker.bringToFront();
+}
+
+function bringAllStationOriginsToFront(){
+  stationOriginMarkers.forEach(marker => { if (marker?.bringToFront) marker.bringToFront(); });
 }
 
 function registerStationOrigin(entry){
@@ -131,6 +138,7 @@ function registerStationOrigin(entry){
   if (!info) return;
   stationOrigins.set(info.key, info);
   upsertStationMarker(info);
+  bringAllStationOriginsToFront();
   updateOriginSummary();
 }
 
@@ -152,6 +160,7 @@ function applyStationOriginList(list){
       stationOriginMarkers.delete(key);
     }
   });
+  bringAllStationOriginsToFront();
   updateOriginSummary();
 }
 
@@ -404,6 +413,22 @@ const map = L.map('map', { worldCopyJump:true }).setView([40,-95], 4);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 12, attribution: "&copy; OpenStreetMap"
 }).addTo(map);
+
+function ensureStationOriginPane(){
+  if (!map || typeof map.getPane !== 'function' || typeof map.createPane !== 'function') return null;
+  const existing = map.getPane('stationOriginPane');
+  if (existing) return existing;
+  map.createPane('stationOriginPane');
+  const pane = map.getPane('stationOriginPane');
+  if (pane){
+    pane.style.zIndex = 700;
+    pane.style.pointerEvents = 'auto';
+  }
+  return pane;
+}
+
+ensureStationOriginPane();
+
 
 function setOrigin(o){
   if (!o || o.lat == null || o.lon == null) return;
