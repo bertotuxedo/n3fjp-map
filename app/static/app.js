@@ -19,6 +19,10 @@ const bannerText = document.getElementById('bannerText');
 const btnMap     = document.getElementById('btnMap');
 const btnGlobe   = document.getElementById('btnGlobe');
 const clearFiltersBtn = document.getElementById('clearFilters');
+const sidebarToggle = document.getElementById('sidebarToggle');
+const sidebar = document.querySelector('.sidebar');
+const grid = document.querySelector('.grid');
+let leafletMap = null;
 
 const BAND_STYLE = {
   "160":"#6b4e16","80":"#8b4513","60":"#b5651d","40":"#1e90ff","30":"#4682b4",
@@ -52,6 +56,43 @@ let globeHighlight = null;
 const stationOrigins = new Map();
 const stationOriginMarkers = new Map();
 let primaryStationName = 'Primary Station';
+let sidebarForcedState = null;
+const MOBILE_BREAKPOINT = 980;
+const DESKTOP_RESET_BREAKPOINT = 1180;
+
+function setSidebarCollapsed(collapsed){
+  if (!sidebar) return;
+  const shouldCollapse = !!collapsed;
+  document.body.classList.toggle('sidebar-collapsed', shouldCollapse);
+  sidebar.classList.toggle('is-collapsed', shouldCollapse);
+  if (grid) grid.classList.toggle('sidebar-collapsed', shouldCollapse);
+
+  // Ensure the visual state updates even if stylesheet rules are stale
+  sidebar.style.transform = shouldCollapse ? 'translateX(-100%)' : '';
+  sidebar.style.opacity = shouldCollapse ? '0' : '';
+  sidebar.style.pointerEvents = shouldCollapse ? 'none' : '';
+
+  if (sidebarToggle){
+    sidebarToggle.classList.toggle('active', !shouldCollapse);
+    sidebarToggle.setAttribute('aria-expanded', (!shouldCollapse).toString());
+    sidebarToggle.setAttribute('aria-pressed', (!shouldCollapse).toString());
+    sidebarToggle.setAttribute('data-state', shouldCollapse ? 'collapsed' : 'open');
+  }
+
+  requestAnimationFrame(()=>{
+    if (leafletMap && typeof leafletMap.invalidateSize === 'function'){
+      leafletMap.invalidateSize();
+    }
+  });
+}
+
+function autoCollapseSidebar(){
+  if (sidebarForcedState !== null) return;
+  setSidebarCollapsed(window.innerWidth < MOBILE_BREAKPOINT);
+}
+
+// establish initial state before any layout-dependent code runs
+autoCollapseSidebar();
 
 function passFilters(meta){
   if (bandSel && bandSel.value && (meta.band||"") !== bandSel.value) return false;
@@ -417,6 +458,8 @@ const map = L.map('map', { worldCopyJump:true }).setView([40,-95], 4);
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 12, attribution: "&copy; OpenStreetMap"
 }).addTo(map);
+leafletMap = map;
+autoCollapseSidebar();
 
 function ensureStationOriginPane(){
   if (!map || typeof map.getPane !== 'function' || typeof map.createPane !== 'function') return null;
@@ -1116,6 +1159,22 @@ btnGlobe.addEventListener('click', ()=>{
   globeEl.style.display='block';
   ensureGlobe();
   syncGlobeArcs();
+});
+
+if (sidebarToggle){
+  sidebarToggle.addEventListener('click', ()=>{
+    const currentlyCollapsed = document.body.classList.contains('sidebar-collapsed');
+    const nextState = !currentlyCollapsed;
+    sidebarForcedState = nextState;
+    setSidebarCollapsed(nextState);
+  });
+}
+
+window.addEventListener('resize', ()=>{
+  if (sidebarForcedState !== null && window.innerWidth >= DESKTOP_RESET_BREAKPOINT){
+    sidebarForcedState = null;
+  }
+  autoCollapseSidebar();
 });
 
 if (recentBox) recentBox.addEventListener('click', (ev)=>{ if (ev.target === recentBox) clearSelectedContact(); });

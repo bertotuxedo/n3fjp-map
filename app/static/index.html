@@ -7,7 +7,9 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <style>
     body { margin:0; font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#0b0e12; color:#e6e6e6; }
-    .topbar { display:flex; gap:12px; align-items:center; padding:10px 14px; background:#121722; border-bottom:1px solid #1d2330; }
+    .topbar { display:flex; gap:12px; align-items:center; padding:10px 14px; background:#121722; border-bottom:1px solid #1d2330; flex-wrap:wrap; }
+    .topbar span { font-size:14px; }
+    .topbar strong { font-size:14px; }
     .pill { padding:3px 8px; border-radius:999px; font-size:12px; }
     .pill.ok { background:#10381a; color:#6be07e;}
     .pill.bad{ background:#3a1414; color:#ff7a7a;}
@@ -21,8 +23,8 @@
     .status-chip.bad .dot { background:#ff7a7a; box-shadow:0 0 0 2px #2d1619; }
     .status-chip.off  { color:#a3b0c7; border-color:#1a2130; background:#0b0f17; }
     .status-chip.off .dot { background:#596883; box-shadow:0 0 0 2px #0b0f17; }
-    .grid { display:grid; grid-template-columns: 320px 1fr; gap:0; height: calc(100vh - 52px); }
-    .sidebar { background:#0f141d; border-right:1px solid #1d2330; padding:12px; overflow:auto; }
+    .grid { display:grid; grid-template-columns: 320px 1fr; gap:0; height: calc(100vh - 52px); position:relative; }
+    .sidebar { background:#0f141d; border-right:1px solid #1d2330; padding:12px; overflow:auto; transition: transform 0.25s ease, opacity 0.2s ease; }
     .sidebar h3 { margin:10px 0 6px; font-weight:600; font-size:13px; color:#a7b1c2; }
     .sidebar .box { background:#0b0f17; border:1px solid #1a2130; border-radius:10px; padding:10px; margin-bottom:12px; }
     .select { width:100%; background:#0b0f17; color:#e6e6e6; border:1px solid #1a2130; border-radius:8px; padding:6px 8px; }
@@ -50,6 +52,48 @@
     .filter-actions { display:flex; justify-content:flex-end; margin-top:12px; }
     .btn { background:#0b0f17; color:#cfe0ff; border:1px solid #1a2130; padding:6px 10px; border-radius:8px; cursor:pointer; }
     .btn:hover { border-color:#24486d; }
+
+    .sidebar-toggle {
+      background:#0b0f17;
+      color:#cfe0ff;
+      border:1px solid #1a2130;
+      padding:6px 10px;
+      border-radius:8px;
+      cursor:pointer;
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+    }
+    .sidebar-toggle.active { background:#19314d; border-color:#24486d; }
+
+    .sidebar-collapsed .sidebar,
+    .sidebar.is-collapsed {
+      transform: translateX(-100%);
+      opacity:0;
+      pointer-events:none;
+    }
+    .sidebar-collapsed .grid,
+    .grid.sidebar-collapsed { grid-template-columns: 0 1fr; }
+    .sidebar-collapsed .sidebar-toggle { background:#19314d; border-color:#24486d; }
+
+    @media (max-width: 1180px){
+      .grid { grid-template-columns: 280px 1fr; }
+      .topbar { gap:8px; }
+      .topbar span, .topbar strong { font-size:13px; }
+    }
+
+    @media (max-width: 980px){
+      .topbar { gap:6px; }
+      .topbar span, .topbar strong { font-size:12px; }
+      .togglewrap button, .sidebar-toggle { padding:6px 8px; font-size:13px; }
+      .pill { font-size:11px; }
+      .sidebar-toggle { display:inline-flex; align-items:center; gap:6px; }
+      .sidebar { position:absolute; z-index:800; width:280px; max-width:90vw; height:calc(100vh - 52px); box-shadow:6px 0 16px rgba(0,0,0,0.35); }
+      .grid { grid-template-columns: 1fr; }
+      .sidebar-collapsed .grid,
+      .grid.sidebar-collapsed { grid-template-columns: 1fr; }
+      .banner { padding-bottom:14px; }
+    }
   </style>
 
   <!-- Leaflet -->
@@ -58,7 +102,16 @@
   <script src="https://unpkg.com/globe.gl"></script>
 </head>
 <body>
+  <script>
+    // Default to a collapsed sidebar on narrow viewports before the main script loads
+    if (window.innerWidth < 980) {
+      document.body.classList.add('sidebar-collapsed');
+    }
+  </script>
   <div class="topbar">
+    <button id="sidebarToggle" class="sidebar-toggle" aria-expanded="true" aria-label="Toggle sidebar">
+      ☰
+    </button>
     <div class="togglewrap">
       <button id="btnMap" class="active">Map</button>
       <button id="btnGlobe">Globe</button>
