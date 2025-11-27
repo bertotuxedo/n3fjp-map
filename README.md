@@ -10,7 +10,7 @@ Real-time map and globe visualization for stations logging contacts with the N3F
 ## Features
 - **Live contact visualization** on a Leaflet map (2D) and globe.gl (3D) with animated arcs.
 - **Band and mode styling** (color by band, solid/dashed patterns by mode including "K2FTS" Morse pattern for CW).
-- **Operator, band, and mode filters** applied client-side.
+- **Operator, band, and mode filters** applied in the browser, with optional server-side search commands to ask N3FJP for filtered log entries.
 - **ARRL section tracking** with automatic greying of worked sections.
 - **Status dashboard** showing API heartbeat, origin fix, and recent contacts.
 - **Optional QRZ.com integration** to improve DX station grid / location data.
@@ -63,6 +63,7 @@ WFD_MODE: true                 # prefer ARRL section centroids when available
 PREFER_SECTION_ALWAYS: false   # force all contacts to section centroids if true
 TTL_SECONDS: 600               # how long a path persists (seconds)
 HEARTBEAT_SECONDS: 5           # poll interval for liveness
+LIST_POLL_SECONDS: 10          # how often to fetch the recent LIST output (minimum 10s)
 
 # Identity & station origins
 PRIMARY_STATION_NAME: "Run 1"   # label for the PC hosting the TCP API
@@ -113,8 +114,12 @@ This holistic setup ensures your static config, runtime secrets, and container w
 
 ## API and UI endpoints
 - `GET /` – Web UI containing the 2D map and 3D globe.
-- `GET /status` – JSON snapshot with current connection status and metadata.
+- `GET /health` – Liveness probe used by container orchestrators.
+- `GET /status` – JSON snapshot with current connection status and metadata (including QRZ and metrics state).
 - `GET /recent` – Server-side buffer of the most recent contacts.
+- `POST /filters/search` – Pause background polling and ask N3FJP for entries matching the provided `band`, `mode`, and/or `call`.
+- `POST /filters/clear` – Resume default polling after a filter search.
+- `GET /metrics` – Internal metrics including counts of parsed frames, drawn paths, and connected clients.
 - `GET /static/*` – Static UI assets.
 - `WS /ws` – WebSocket stream used by the UI for status/origin/path updates.
 
