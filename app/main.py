@@ -446,11 +446,15 @@ class Hub:
         if not self.should_draw(call, band, mode):
             return
 
-        to = copy.deepcopy(dest) if to.get("grid") is None:
-            try:
-                to["grid"] = maidenhead_from_latlon(to["lat"], to["lon"])
-            except Exception:
-                pass
+        if dest.get("grid") is None:
+            to = copy.deepcopy(dest)
+        else:
+            to = dest
+
+        try:
+            to["grid"] = maidenhead_from_latlon(to["lat"], to["lon"])
+        except Exception:
+            pass
 
         path_id = self.next_path_id
         self.next_path_id += 1
