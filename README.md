@@ -37,13 +37,13 @@ Real-time map and globe visualization for stations logging contacts with the N3F
    echo "QRZ_PASSWORD=your_password" >> .env
    echo "QRZ_AGENT=n3fjp-map" >> .env
    ```
-OR
+   OR
 
    ```bash
    cp .env.example .env
    nano .env
    ```
-and adjust variables
+   and adjust variables
    
 6. Launch the stack:
    ```bash
