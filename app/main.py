@@ -16,7 +16,7 @@ from datetime import datetime
 import httpx
 import xmltodict
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -316,6 +316,9 @@ class Hub:
         self.list_seen_keys: Deque[str] = deque(maxlen=500)
         self.list_seen_index: Set[str] = set()
         self.next_message_id: int = 1
+        self.command_queue: asyncio.Queue[str] = asyncio.Queue()
+        self.polling_gate = asyncio.Event()
+        self.polling_gate.set()
         # metrics
         self.metrics = {
             "frames_parsed_total": 0,
@@ -371,6 +374,7 @@ class Hub:
             "ttl_seconds": TTL_SECONDS,
             "broadcast_messages": list(self.broadcast_messages),
             "qrz": qrz_client.status(),
+            "polling_paused": not self.polling_gate.is_set(),
         }
 
     async def add_broadcast_message(self, message: Optional[Dict[str, Any]]):
@@ -442,8 +446,7 @@ class Hub:
         if not self.should_draw(call, band, mode):
             return
 
-        to = copy.deepcopy(dest)
-        if to.get("grid") is None:
+        to = copy.deepcopy(dest) if to.get("grid") is None:
             try:
                 to["grid"] = maidenhead_from_latlon(to["lat"], to["lon"])
             except Exception:
@@ -502,6 +505,19 @@ class Hub:
         entries = [copy.deepcopy(v) for v in self.station_origins.values()]
         entries.sort(key=lambda item: (item.get("name") or "").upper())
         return entries
+
+    def reset_list_seen(self):
+        self.list_seen_keys.clear()
+        self.list_seen_index.clear()
+
+    async def enqueue_command(self, cmd: str):
+        await self.command_queue.put(cmd)
+
+    def pause_polling(self):
+        self.polling_gate.clear()
+
+    def resume_polling(self):
+        self.polling_gate.set()
 
     def remember_list_entry(self, key: Optional[str]) -> bool:
         if not key:
@@ -1001,6 +1017,17 @@ if OPERATOR_ORIGIN_OVERRIDES:
     operator_origin_cache.update({k: copy.deepcopy(v) for k, v in OPERATOR_ORIGIN_OVERRIDES.items()})
 hub = Hub(initial_station_origins=STATION_PRESETS, primary_station_name=PRIMARY_STATION_NAME)
 
+def build_search_command(band: str = "", mode: str = "", call: str = "") -> str:
+    parts = ["<CMD><SEARCH><INCLUDEALL>"]
+    if band:
+        parts.append(f"<BAND>{band}</BAND>")
+    if mode:
+        parts.append(f"<MODE>{mode}</MODE>")
+    if call:
+        parts.append(f"<CALL>{call}</CALL>")
+    parts.append("</CMD>")
+    return "".join(parts)
+
 # ---------- Status endpoints ----------
 @app.get("/status")
 async def status():
@@ -1009,6 +1036,38 @@ async def status():
 @app.get("/recent")
 async def recent():
     return JSONResponse({"recent": list(hub.recent_paths)})
+
+
+@app.post("/filters/search")
+async def apply_filters(payload: Dict[str, Any] = Body(...)):
+    if not hub.state.get("connected"):
+        raise HTTPException(status_code=503, detail="Not connected to N3FJP")
+
+    band = str(payload.get("band") or "").strip()
+    mode = str(payload.get("mode") or "").strip().upper()
+    call = str(payload.get("call") or "").strip().upper()
+
+    if not any((band, mode, call)):
+        raise HTTPException(status_code=400, detail="At least one filter must be provided")
+
+    hub.pause_polling()
+    hub.reset_list_seen()
+    cmd = build_search_command(band=band, mode=mode, call=call)
+    await hub.enqueue_command(cmd)
+    return JSONResponse({"ok": True, "command": cmd, "polling_paused": True})
+
+
+@app.post("/filters/clear")
+async def clear_filters():
+    if not hub.state.get("connected"):
+        raise HTTPException(status_code=503, detail="Not connected to N3FJP")
+
+    hub.reset_list_seen()
+    hub.resume_polling()
+    cmd = "<CMD><LIST><INCLUDEALL><VALUE>10000</VALUE></CMD>"
+    await hub.enqueue_command(cmd)
+    return JSONResponse({"ok": True, "command": cmd, "polling_paused": False})
+
 
 # ---------- Metrics ----------
 @app.get("/metrics")
@@ -1068,15 +1127,31 @@ async def _heartbeat(writer: asyncio.StreamWriter):
         logging.info(f"Heartbeat ended: {e}")
 
 
-async def _poll_recent(writer: asyncio.StreamWriter):
+async def _poll_recent(writer: asyncio.StreamWriter, gate: asyncio.Event):
     try:
         while True:
+            await gate.wait()
             await _send(writer, "<CMD><LIST><INCLUDEALL><VALUE>10000</VALUE></CMD>")
-            await asyncio.sleep(LIST_POLL_SECONDS)
+            for _ in range(int(max(1, LIST_POLL_SECONDS * 10))):
+                await asyncio.sleep(0.1)
+                if not gate.is_set():
+                    break
     except asyncio.CancelledError:
         raise
     except Exception as e:
         logging.info(f"Recent poller ended: {e}")
+
+
+async def _command_pump(writer: asyncio.StreamWriter):
+    try:
+        while True:
+            cmd = await hub.command_queue.get()
+            await _send(writer, cmd)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logging.info(f"Command pump ended: {e}")
+
 
 # ---------- N3FJP TCP client task ----------
 async def n3fjp_client():
@@ -1085,6 +1160,7 @@ async def n3fjp_client():
         writer: Optional[asyncio.StreamWriter] = None
         hb_task: Optional[asyncio.Task] = None
         poll_task: Optional[asyncio.Task] = None
+        command_task: Optional[asyncio.Task] = None
         try:
             logging.info(f"Connecting to N3FJP at {N3FJP_HOST}:{N3FJP_PORT} ...")
             reader, writer = await asyncio.open_connection(N3FJP_HOST, N3FJP_PORT)
@@ -1099,7 +1175,8 @@ async def n3fjp_client():
             await _send(writer, "<CMD><OPINFO></CMD>")
 
             hb_task = asyncio.create_task(_heartbeat(writer))
-            poll_task = asyncio.create_task(_poll_recent(writer))
+            poll_task = asyncio.create_task(_poll_recent(writer, hub.polling_gate))
+            command_task = asyncio.create_task(_command_pump(writer))
             buf = bytearray()
             last_emit = 0.0
 
@@ -1367,7 +1444,7 @@ async def n3fjp_client():
             await hub.broadcast({"type": "status", "data": hub.compose_status()})
             await asyncio.sleep(2)
         finally:
-            for t in (hb_task, poll_task):
+            for t in (hb_task, poll_task, command_task):
                 if t:
                     t.cancel()
                     with contextlib.suppress(asyncio.CancelledError):

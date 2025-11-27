@@ -47,6 +47,9 @@
     .recent-meta { font-size:11px; color:#8ea8c8; margin-top:2px; }
     .recent-entry.active .recent-meta { color:#c7dcff; }
     #map .leaflet-interactive:focus { outline: none; }
+    .filter-actions { display:flex; justify-content:flex-end; margin-top:12px; }
+    .btn { background:#0b0f17; color:#cfe0ff; border:1px solid #1a2130; padding:6px 10px; border-radius:8px; cursor:pointer; }
+    .btn:hover { border-color:#24486d; }
   </style>
 
   <!-- Leaflet -->
@@ -94,8 +97,11 @@
           <option>CW</option>
         </select>
         <div style="height:8px"></div>
-        <label>Operator</label>
-        <select id="operSel" class="select"><option value="">All</option></select>
+        <label>Call</label>
+        <input id="callInput" class="select" placeholder="Enter callsign" />
+        <div class="filter-actions">
+          <button id="clearFilters" class="btn">Clear</button>
+        </div>
       </div>
 
       <div class="box">

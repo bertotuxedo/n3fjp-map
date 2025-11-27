@@ -14,10 +14,11 @@ const recentBox  = document.getElementById('recentBox');
 const messageThread = document.getElementById('messageThread');
 const bandSel    = document.getElementById('bandSel');
 const modeSel    = document.getElementById('modeSel');
-const operSel    = document.getElementById('operSel');
+const callInput  = document.getElementById('callInput');
 const bannerText = document.getElementById('bannerText');
 const btnMap     = document.getElementById('btnMap');
 const btnGlobe   = document.getElementById('btnGlobe');
+const clearFiltersBtn = document.getElementById('clearFilters');
 
 const BAND_STYLE = {
   "160":"#6b4e16","80":"#8b4513","60":"#b5651d","40":"#1e90ff","30":"#4682b4",
@@ -55,7 +56,10 @@ let primaryStationName = 'Primary Station';
 function passFilters(meta){
   if (bandSel && bandSel.value && (meta.band||"") !== bandSel.value) return false;
   if (modeSel && modeSel.value && (meta.mode||"").toUpperCase() !== modeSel.value) return false;
-  if (operSel && operSel.value && (meta.operator||"") !== operSel.value) return false;
+  if (callInput){
+    const desiredCall = (callInput.value || '').trim().toUpperCase();
+    if (desiredCall && (meta.call || '').toUpperCase() !== desiredCall) return false;
+  }
   return true;
 }
 
@@ -1061,6 +1065,44 @@ function addGlobeArc(path){
   syncGlobeArcs();
 }
 
+async function clearFilters(sendCommand=true){
+  if (bandSel) bandSel.value='';
+  if (modeSel) modeSel.value='';
+  if (callInput) callInput.value='';
+  applyFiltersToSegments();
+  if (!sendCommand) return;
+  try {
+    const resp = await fetch('/filters/clear', { method:'POST' });
+    if (!resp.ok) console.error('Failed to clear filters', await resp.text());
+  } catch (err) {
+    console.error('Failed to clear filters', err);
+  }
+}
+
+async function runFilterSearch(){
+  const payload = {
+    band: bandSel?.value || '',
+    mode: (modeSel?.value || '').toUpperCase(),
+    call: callInput ? (callInput.value || '').trim().toUpperCase() : '',
+  };
+  const hasFilters = payload.band || payload.mode || payload.call;
+  if (!hasFilters){
+    await clearFilters(true);
+    return;
+  }
+  applyFiltersToSegments();
+  try {
+    const resp = await fetch('/filters/search', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) console.error('Failed to apply filters', await resp.text());
+  } catch (err) {
+    console.error('Failed to apply filters', err);
+  }
+}
+
 // ---------- View toggle ----------
 btnMap.addEventListener('click', ()=>{
   btnMap.classList.add('active'); btnGlobe.classList.remove('active');
@@ -1078,9 +1120,16 @@ btnGlobe.addEventListener('click', ()=>{
 
 if (recentBox) recentBox.addEventListener('click', (ev)=>{ if (ev.target === recentBox) clearSelectedContact(); });
 
-[bandSel, modeSel, operSel].forEach(sel => {
-  if (sel) sel.addEventListener('change', ()=> applyFiltersToSegments());
+[bandSel, modeSel].forEach(sel => {
+  if (sel) sel.addEventListener('change', ()=> runFilterSearch());
 });
+if (callInput){
+  callInput.addEventListener('change', ()=> runFilterSearch());
+  callInput.addEventListener('keyup', (ev)=>{ if (ev.key === 'Enter') runFilterSearch(); });
+}
+if (clearFiltersBtn){
+  clearFiltersBtn.addEventListener('click', (ev)=>{ ev.preventDefault(); clearFilters(); });
+}
 
 // ---------- Status & WS ----------
 function renderQrzStatus(data){
@@ -1122,14 +1171,6 @@ function renderQrzStatus(data){
   qrzStatus.title = title;
 }
 
-function updateOperators(list){
-  const cur=operSel.value;
-  operSel.innerHTML='<option value="">All</option>';
-  (list||[]).forEach(op=>{ const o=document.createElement('option'); o.value=op; o.textContent=op; operSel.appendChild(o); });
-  if ([...operSel.options].some(o=>o.value===cur)) operSel.value=cur;
-  applyFiltersToSegments();
-}
-
 async function refreshStatus(){
   try{
     const s=await fetch('/status').then(r=>r.json());
@@ -1155,7 +1196,6 @@ async function refreshStatus(){
       if (countriesCount) countriesCount.textContent = '0';
       s.countries_worked.forEach(grayCountry);
     }
-    if (s.operators) updateOperators(s.operators);
     if (s.broadcast_messages) replaceBroadcastMessages(s.broadcast_messages);
   } catch {}
 }
@@ -1200,8 +1240,6 @@ ws.onmessage = (ev)=>{
       // section dim
       if (data.meta?.section) graySection(data.meta.section);
       if (data.meta?.country) grayCountry(data.meta.country);
-    } else if (msg.type==='operators'){
-      updateOperators(msg.data||[]);
     } else if (msg.type==='section_hit'){
       graySection(msg.data);
     } else if (msg.type==='sections_worked'){
