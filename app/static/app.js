@@ -20,7 +20,7 @@ const btnMap     = document.getElementById('btnMap');
 const btnGlobe   = document.getElementById('btnGlobe');
 const clearFiltersBtn = document.getElementById('clearFilters');
 const sidebarToggle = document.getElementById('sidebarToggle');
-const sidebar = document.querySelector('.sidebar');
+const sidebar = document.getElementById('sidebar');
 const grid = document.querySelector('.grid');
 let leafletMap = null;
 
@@ -61,16 +61,21 @@ const MOBILE_BREAKPOINT = 980;
 const DESKTOP_RESET_BREAKPOINT = 1180;
 
 function setSidebarCollapsed(collapsed){
-  if (!sidebar) return;
   const shouldCollapse = !!collapsed;
   document.body.classList.toggle('sidebar-collapsed', shouldCollapse);
-  sidebar.classList.toggle('is-collapsed', shouldCollapse);
-  if (grid) grid.classList.toggle('sidebar-collapsed', shouldCollapse);
+  if (sidebar){
+    sidebar.classList.toggle('is-collapsed', shouldCollapse);
 
-  // Ensure the visual state updates even if stylesheet rules are stale
-  sidebar.style.transform = shouldCollapse ? 'translateX(-100%)' : '';
-  sidebar.style.opacity = shouldCollapse ? '0' : '';
-  sidebar.style.pointerEvents = shouldCollapse ? 'none' : '';
+    // Keep accessibility + visibility in sync even if CSS is overridden
+    sidebar.hidden = shouldCollapse;
+    sidebar.setAttribute('aria-hidden', shouldCollapse ? 'true' : 'false');
+
+    // Ensure the visual state updates even if stylesheet rules are stale
+    sidebar.style.transform = shouldCollapse ? 'translateX(-100%)' : '';
+    sidebar.style.opacity = shouldCollapse ? '0' : '';
+    sidebar.style.pointerEvents = shouldCollapse ? 'none' : '';
+  }
+  if (grid) grid.classList.toggle('sidebar-collapsed', shouldCollapse);
 
   if (sidebarToggle){
     sidebarToggle.classList.toggle('active', !shouldCollapse);
@@ -1162,11 +1167,19 @@ btnGlobe.addEventListener('click', ()=>{
 });
 
 if (sidebarToggle){
-  sidebarToggle.addEventListener('click', ()=>{
+  const toggleSidebarState = ()=>{
     const currentlyCollapsed = document.body.classList.contains('sidebar-collapsed');
     const nextState = !currentlyCollapsed;
     sidebarForcedState = nextState;
     setSidebarCollapsed(nextState);
+  };
+
+  sidebarToggle.addEventListener('click', (ev)=>{ ev.preventDefault(); toggleSidebarState(); });
+  sidebarToggle.addEventListener('keydown', (ev)=>{
+    if (ev.key === 'Enter' || ev.key === ' '){
+      ev.preventDefault();
+      toggleSidebarState();
+    }
   });
 }
 
