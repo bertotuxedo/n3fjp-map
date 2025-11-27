@@ -27,17 +27,29 @@ Real-time map and globe visualization for stations logging contacts with the N3F
    cd n3fjp-map
    ```
 2. Adjust `config/config.yaml` for your station (see [Configuration](#configuration)).
-3. (Optional but recommended) Create a `.env` file in the repo root for secrets such as QRZ credentials (these are consumed by `docker-compose.yaml`). You can start from `.env.example`:
+   ```bash
+   nano config/config.yaml
+   ```
+4. (Optional but recommended) Create a `.env` file in the repo root for secrets such as QRZ credentials (these are consumed by `docker-compose.yaml`). You can start from `.env.example`:
+
    ```bash
    echo "QRZ_USERNAME=your_callsign" >> .env
    echo "QRZ_PASSWORD=your_password" >> .env
    echo "QRZ_AGENT=n3fjp-map" >> .env
    ```
-4. Launch the stack:
+OR
+
+   ```bash
+   cp .env.example .env
+   nano .env
+   ```
+and adjust variables
+   
+6. Launch the stack:
    ```bash
    docker compose up --build -d
    ```
-5. Open the UI at `http://<host>:8080`.
+7. Open the UI at `http://<host>:8080`.
 
 The compose file mounts `config/config.yaml` into the container at `/config/config.yaml` and exports port `8080` from the FastAPI app.
 
@@ -55,8 +67,8 @@ The primary configuration lives in `config/config.yaml` (mounted read-only by Do
 
 ```yaml
 # N3FJP TCP server location
-N3FJP_HOST: "192.168.1.123"
-N3FJP_PORT: 1100
+N3FJP_HOST: "192.168.1.123"    # edit this to the local IP running the N3FJP server
+N3FJP_PORT: 1100               # default port for N3FJP API
 
 # Behavior
 WFD_MODE: true                 # prefer ARRL section centroids when available
@@ -66,10 +78,10 @@ HEARTBEAT_SECONDS: 5           # poll interval for liveness
 LIST_POLL_SECONDS: 10          # how often to fetch the recent LIST output (minimum 10s)
 
 # Identity & station origins
-PRIMARY_STATION_NAME: "Run 1"   # label for the PC hosting the TCP API
+PRIMARY_STATION_NAME: "Run 1"  # Callsign for the PC hosting the TCP API
 STATION_LOCATIONS:
-  "Run 1":
-    grid: "FN31pr"              # grid or lat/lon for the primary logger
+  "Run 1":                     # comment out if the arcs are causing problems
+    grid: "FN31pr"             # grid or lat/lon for the primary logger
   "GOTA":
     lat: 34.932
     lon: -81.025
